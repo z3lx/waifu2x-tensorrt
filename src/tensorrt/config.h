@@ -24,6 +24,24 @@ namespace trt {
         int32_t minHeight = 64;
         int32_t optHeight = 256;
         int32_t maxHeight = 640;
+
+        bool operator==(const Config& other) const {
+            return precision == other.precision &&
+                deviceIndex == other.deviceIndex &&
+                minBatchSize == other.minBatchSize &&
+                optBatchSize == other.optBatchSize &&
+                maxBatchSize == other.maxBatchSize &&
+                minWidth == other.minWidth &&
+                optWidth == other.optWidth &&
+                maxWidth == other.maxWidth &&
+                minHeight == other.minHeight &&
+                optHeight == other.optHeight &&
+                maxHeight == other.maxHeight;
+        }
+
+        bool operator!=(const Config& other) const {
+            return !(*this == other);
+        }
     };
 }
 
