@@ -21,6 +21,9 @@ namespace trt {
     private:
         Logger gLogger;
         Config config;
+
+        bool serializeConfigToPath(std::string& onnxModelPath);
+        static void getDeviceNames(std::vector<std::string>& deviceNames);
     };
 }
 

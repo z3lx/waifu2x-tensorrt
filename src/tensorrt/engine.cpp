@@ -60,11 +60,14 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
         const auto input = network->getInput(i);
         const auto inputName = input->getName();
         const auto inputDims = input->getDimensions();
-        int32_t inputC = inputDims.d[1];
+        int32_t channels = inputDims.d[1];
 
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, nvinfer1::Dims4{ config.minBatchSize, inputC, config.minHeight, config.minWidth });
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, nvinfer1::Dims4{ config.optBatchSize, inputC, config.optHeight, config.optWidth });
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, nvinfer1::Dims4{ config.maxBatchSize, inputC, config.maxHeight, config.maxWidth });
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN,
+            nvinfer1::Dims4 { config.minBatchSize, channels, config.minHeight, config.minWidth });
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT,
+            nvinfer1::Dims4 { config.optBatchSize, channels, config.optHeight, config.optWidth });
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX,
+            nvinfer1::Dims4 { config.maxBatchSize, channels, config.maxHeight, config.maxWidth });
     }
     builderConfig->addOptimizationProfile(profile);
 
@@ -100,11 +103,70 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
 
     // Save engine
     gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Saving engine...");
-    std::ofstream engineFile("engine.trt", std::ios::binary); //CHANGE NAME
+    std::string modelPath = onnxModelPath;
+    if (!serializeConfigToPath(modelPath)) {
+        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to serialize config to path.");
+        return false;
+    }
+    std::ofstream engineFile(modelPath, std::ios::binary);
     engineFile.write(reinterpret_cast<const char*>(engine->data()), engine->size());
     engineFile.close();
 
     // Destroy stream
     cudaStreamDestroy(stream);
     return true;
+}
+
+bool trt::Engine::serializeConfigToPath(std::string& onnxModelPath) {
+    const auto filenameIndex = onnxModelPath.find_last_of('/') + 1;
+    onnxModelPath = onnxModelPath.substr(filenameIndex, onnxModelPath.find_last_of('.') - filenameIndex);
+
+    // Append device name
+    std::vector<std::string> deviceNames;
+    getDeviceNames(deviceNames);
+    if (config.deviceIndex >= deviceNames.size()) {
+        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Invalid device index.");
+        return false;
+    }
+    auto deviceName = deviceNames[config.deviceIndex];
+    deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
+    onnxModelPath += "." + deviceName;
+
+    // Append precision
+    switch (config.precision) {
+    case Precision::FP16:
+        onnxModelPath += ".FP16";
+        break;
+    case Precision::FP32:
+        onnxModelPath += ".FP32";
+        break;
+    }
+
+    // Append dynamic shapes
+    onnxModelPath += "." + std::to_string(config.minBatchSize);
+    onnxModelPath += "." + std::to_string(config.optBatchSize);
+    onnxModelPath += "." + std::to_string(config.maxBatchSize);
+    onnxModelPath += "." + std::to_string(config.minWidth);
+    onnxModelPath += "." + std::to_string(config.optWidth);
+    onnxModelPath += "." + std::to_string(config.maxWidth);
+    onnxModelPath += "." + std::to_string(config.minHeight);
+    onnxModelPath += "." + std::to_string(config.optHeight);
+    onnxModelPath += "." + std::to_string(config.maxHeight);
+
+    // Append extension
+    onnxModelPath += ".trt";
+
+    return true;
+}
+
+void trt::Engine::getDeviceNames(std::vector<std::string> &deviceNames) {
+    int32_t deviceCount;
+    cudaGetDeviceCount(&deviceCount);
+    deviceNames.clear();
+    deviceNames.reserve(deviceCount);
+    for (int32_t i = 0; i < deviceCount; ++i) {
+        cudaDeviceProp deviceProp {};
+        cudaGetDeviceProperties(&deviceProp, i);
+        deviceNames.emplace_back(deviceProp.name);
+    }
 }
