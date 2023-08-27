@@ -1,6 +1,7 @@
 #ifndef WAIFU2X_TENSORRT_TRT_ENGINE_H
 #define WAIFU2X_TENSORRT_TRT_ENGINE_H
 
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -15,14 +16,14 @@ namespace trt {
     public:
         Engine(Config config);
         virtual ~Engine();
-        bool load(const std::string& onnxModelPath);
+        bool load(const std::string& modelPath);
         bool build(const std::string& onnxModelPath);
-
+        static bool deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig);
     private:
         Logger gLogger;
         Config config;
 
-        bool serializeConfigToPath(std::string& onnxModelPath);
+        bool serializeConfig(std::string& onnxModelPath);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
     };
 }

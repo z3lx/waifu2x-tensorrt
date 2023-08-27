@@ -9,11 +9,10 @@ trt::Engine::~Engine() {
 
 }
 
-bool trt::Engine::load(const std::string& onnxModelPath) {
+bool trt::Engine::load(const std::string& modelPath) {
     return true;
 }
 
-#include <iostream>
 bool trt::Engine::build(const std::string& onnxModelPath) {
     // Create builder
     gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Building engine...");
@@ -104,7 +103,7 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
     // Save engine
     gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Saving engine...");
     std::string modelPath = onnxModelPath;
-    if (!serializeConfigToPath(modelPath)) {
+    if (!serializeConfig(modelPath)) {
         gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to serialize config to path.");
         return false;
     }
@@ -117,7 +116,54 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
     return true;
 }
 
-bool trt::Engine::serializeConfigToPath(std::string& onnxModelPath) {
+bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig) {
+    std::string trtModelName = trtEnginePath.substr(trtEnginePath.find_last_of('/') + 1);
+    std::istringstream iss(trtModelName);
+    std::string token;
+
+    std::vector<std::string> tokens;
+    while (std::getline(iss, token, '.')) {
+        tokens.push_back(token);
+    }
+
+    if (tokens.size() != 13) {
+        std::cout << "Invalid engine." << std::endl;
+        return false;
+    }
+
+    auto deviceIndex = -1;
+    std::vector<std::string> deviceNames;
+    getDeviceNames(deviceNames);
+    for (int i = 0; i < deviceNames.size(); ++i) {
+        auto deviceName = deviceNames[i];
+        deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
+        if (deviceName == tokens[1]) {
+            deviceIndex = i;
+            break;
+        }
+    }
+
+    if (deviceIndex == -1) {
+        std::cout << "Invalid device." << std::endl;
+        return false;
+    }
+
+    trtEngineConfig.deviceIndex = deviceIndex;
+    trtEngineConfig.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::FP32;
+    trtEngineConfig.minBatchSize = std::stoi(tokens[3]);
+    trtEngineConfig.optBatchSize = std::stoi(tokens[4]);
+    trtEngineConfig.maxBatchSize = std::stoi(tokens[5]);
+    trtEngineConfig.minWidth = std::stoi(tokens[6]);
+    trtEngineConfig.optWidth = std::stoi(tokens[7]);
+    trtEngineConfig.maxWidth = std::stoi(tokens[8]);
+    trtEngineConfig.minHeight = std::stoi(tokens[9]);
+    trtEngineConfig.optHeight = std::stoi(tokens[10]);
+    trtEngineConfig.maxHeight = std::stoi(tokens[11]);
+
+    return true;
+}
+
+bool trt::Engine::serializeConfig(std::string& onnxModelPath) {
     const auto filenameIndex = onnxModelPath.find_last_of('/') + 1;
     onnxModelPath = onnxModelPath.substr(filenameIndex, onnxModelPath.find_last_of('.') - filenameIndex);
 
