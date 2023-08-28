@@ -3,6 +3,8 @@
 
 #include <iostream>
 #include <NvInferRuntimeBase.h>
+#include <plog/Log.h>
+#include <plog/Severity.h>
 
 namespace trt {
     class Logger : public nvinfer1::ILogger {
