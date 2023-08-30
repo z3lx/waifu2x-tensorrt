@@ -9,7 +9,7 @@ namespace trt {
         FP16
     };
 
-    struct Config {
+    struct BuilderConfig {
         Precision precision = Precision::FP16;
         int deviceIndex = 0;
 
@@ -25,7 +25,7 @@ namespace trt {
         int32_t optHeight = 256;
         int32_t maxHeight = 640;
 
-        bool operator==(const Config& other) const {
+        bool operator==(const BuilderConfig& other) const {
             return precision == other.precision &&
                 deviceIndex == other.deviceIndex &&
                 minBatchSize == other.minBatchSize &&
@@ -39,9 +39,15 @@ namespace trt {
                 maxHeight == other.maxHeight;
         }
 
-        bool operator!=(const Config& other) const {
+        bool operator!=(const BuilderConfig& other) const {
             return !(*this == other);
         }
+    };
+
+    struct InferrerConfig {
+        int deviceId = 0;
+        Precision precision = Precision::FP16;
+        nvinfer1::Dims32 inputShape {};
     };
 }
 
