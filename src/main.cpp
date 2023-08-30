@@ -29,7 +29,7 @@ int main() {
     inferConfig.precision = trt::Precision::FP16;
     inferConfig.inputShape = nvinfer1::Dims4{1, 3, size, size};
 
-    trt::SuperResEngine engine(config);
+    trt::SuperResEngine engine;
     engine.load(modelPath, inferConfig);
     //engine.build(modelPath);
     return 0;

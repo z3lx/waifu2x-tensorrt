@@ -1,8 +1,7 @@
 #include "engine.h"
 
-trt::SuperResEngine::SuperResEngine(trt::BuilderConfig config)
-    : config(config)
-{
+trt::SuperResEngine::SuperResEngine() {
+
 }
 
 trt::SuperResEngine::~SuperResEngine() {
@@ -116,7 +115,7 @@ bool trt::SuperResEngine::load(const std::string& modelPath, trt::InferrerConfig
 
 // TODO: error handling and stream deallocation
 // Set cuda device when building the engine
-bool trt::SuperResEngine::build(const std::string& onnxModelPath) {
+bool trt::SuperResEngine::build(const std::string& onnxModelPath, const BuilderConfig& config) {
     PLOG(plog::info) << "SuperResEngine build started with configuration"
         << ": device = " << config.deviceIndex
         << ", precision = " << (config.precision == Precision::FP16 ? "FP16" : "TF32")
@@ -225,7 +224,7 @@ bool trt::SuperResEngine::build(const std::string& onnxModelPath) {
     // Save engine
     PLOG(plog::info) << "Saving engine...";
     std::string modelPath = onnxModelPath;
-    if (!serializeConfig(modelPath)) {
+    if (!serializeConfig(modelPath, config)) {
         PLOG(plog::error) << "Failed to serialize config to path.";
         return false;
     }
@@ -238,8 +237,8 @@ bool trt::SuperResEngine::build(const std::string& onnxModelPath) {
     return true;
 }
 
-bool trt::SuperResEngine::deserializeConfig(const std::string& trtEnginePath, BuilderConfig &trtEngineConfig) {
-    std::string trtModelName = trtEnginePath.substr(trtEnginePath.find_last_of('/') + 1);
+bool trt::SuperResEngine::deserializeConfig(const std::string& path, BuilderConfig& config) {
+    std::string trtModelName = path.substr(path.find_last_of('/') + 1);
     std::istringstream iss(trtModelName);
     std::string token;
 
@@ -270,24 +269,24 @@ bool trt::SuperResEngine::deserializeConfig(const std::string& trtEnginePath, Bu
         return false;
     }
 
-    trtEngineConfig.deviceIndex = deviceIndex;
-    trtEngineConfig.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::TF32;
-    trtEngineConfig.minBatchSize = std::stoi(tokens[3]);
-    trtEngineConfig.optBatchSize = std::stoi(tokens[4]);
-    trtEngineConfig.maxBatchSize = std::stoi(tokens[5]);
-    trtEngineConfig.minWidth = std::stoi(tokens[6]);
-    trtEngineConfig.optWidth = std::stoi(tokens[7]);
-    trtEngineConfig.maxWidth = std::stoi(tokens[8]);
-    trtEngineConfig.minHeight = std::stoi(tokens[9]);
-    trtEngineConfig.optHeight = std::stoi(tokens[10]);
-    trtEngineConfig.maxHeight = std::stoi(tokens[11]);
+    config.deviceIndex = deviceIndex;
+    config.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::TF32;
+    config.minBatchSize = std::stoi(tokens[3]);
+    config.optBatchSize = std::stoi(tokens[4]);
+    config.maxBatchSize = std::stoi(tokens[5]);
+    config.minWidth = std::stoi(tokens[6]);
+    config.optWidth = std::stoi(tokens[7]);
+    config.maxWidth = std::stoi(tokens[8]);
+    config.minHeight = std::stoi(tokens[9]);
+    config.optHeight = std::stoi(tokens[10]);
+    config.maxHeight = std::stoi(tokens[11]);
 
     return true;
 }
 
-bool trt::SuperResEngine::serializeConfig(std::string& onnxModelPath) const {
-    const auto filenameIndex = onnxModelPath.find_last_of('/') + 1;
-    onnxModelPath = onnxModelPath.substr(filenameIndex, onnxModelPath.find_last_of('.') - filenameIndex);
+bool trt::SuperResEngine::serializeConfig(std::string& path, const BuilderConfig &config) {
+    const auto filenameIndex = path.find_last_of('/') + 1;
+    path = path.substr(filenameIndex, path.find_last_of('.') - filenameIndex);
 
     // Append device name
     std::vector<std::string> deviceNames;
@@ -298,31 +297,31 @@ bool trt::SuperResEngine::serializeConfig(std::string& onnxModelPath) const {
     }
     auto deviceName = deviceNames[config.deviceIndex];
     deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
-    onnxModelPath += "." + deviceName;
+    path += "." + deviceName;
 
     // Append precision
     switch (config.precision) {
     case Precision::FP16:
-        onnxModelPath += ".FP16";
+        path += ".FP16";
         break;
     case Precision::TF32:
-        onnxModelPath += ".TF32";
+        path += ".TF32";
         break;
     }
 
     // Append dynamic shapes
-    onnxModelPath += "." + std::to_string(config.minBatchSize);
-    onnxModelPath += "." + std::to_string(config.optBatchSize);
-    onnxModelPath += "." + std::to_string(config.maxBatchSize);
-    onnxModelPath += "." + std::to_string(config.minWidth);
-    onnxModelPath += "." + std::to_string(config.optWidth);
-    onnxModelPath += "." + std::to_string(config.maxWidth);
-    onnxModelPath += "." + std::to_string(config.minHeight);
-    onnxModelPath += "." + std::to_string(config.optHeight);
-    onnxModelPath += "." + std::to_string(config.maxHeight);
+    path += "." + std::to_string(config.minBatchSize);
+    path += "." + std::to_string(config.optBatchSize);
+    path += "." + std::to_string(config.maxBatchSize);
+    path += "." + std::to_string(config.minWidth);
+    path += "." + std::to_string(config.optWidth);
+    path += "." + std::to_string(config.maxWidth);
+    path += "." + std::to_string(config.minHeight);
+    path += "." + std::to_string(config.optHeight);
+    path += "." + std::to_string(config.maxHeight);
 
     // Append extension
-    onnxModelPath += ".trt";
+    path += ".trt";
 
     return true;
 }
