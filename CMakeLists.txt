@@ -22,8 +22,8 @@ add_subdirectory(${plog_SOURCE_DIR})
 
 add_executable(waifu2x_tensorrt
         src/main.cpp
-        src/tensorrt/engine.cpp
-        src/tensorrt/engine.h
+        src/tensorrt/img2img.cpp
+        src/tensorrt/img2img.h
         src/tensorrt/config.h
         src/tensorrt/logger.cpp
         src/tensorrt/logger.h
