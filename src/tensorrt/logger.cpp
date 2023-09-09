@@ -12,7 +12,7 @@ void trt::Logger::log(nvinfer1::ILogger::Severity severity, const char *msg) noe
             PLOG(plog::warning) << msg;
             break;
         case Severity::kINFO:
-            PLOG(plog::info) << msg;
+            PLOG(plog::debug) << msg;
             break;
         case Severity::kVERBOSE:
             PLOG(plog::verbose) << msg;
