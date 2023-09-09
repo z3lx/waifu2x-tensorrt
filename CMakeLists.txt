@@ -25,7 +25,6 @@ add_executable(waifu2x_tensorrt
         src/tensorrt/img2img.cpp
         src/tensorrt/img2img.h
         src/tensorrt/config.h
-        src/tensorrt/logger.cpp
         src/tensorrt/logger.h
         src/utilities/time.h
         src/tensorrt/helper.h
