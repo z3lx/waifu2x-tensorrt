@@ -28,7 +28,9 @@ namespace trt {
         virtual ~Img2Img();
         bool build(const std::string& path, const BuilderConfig& config);
         bool load(const std::string& path, InferrerConfig& config);
-        bool infer(std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
+        bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
+
+        bool process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2f overlap);
 
     private:
         Logger gLogger;
@@ -40,11 +42,15 @@ namespace trt {
         std::unique_ptr<nvinfer1::ICudaEngine> engine;
         std::unique_ptr<nvinfer1::IExecutionContext> context;
 
-        static cv::cuda::GpuMat blobFromImages(std::vector<cv::cuda::GpuMat>& batch, bool normalize);
+        static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch, bool normalize);
         static std::vector<cv::cuda::GpuMat> imagesFromBlob(cv::cuda::GpuMat& blob, nvinfer1::Dims32 shape, bool denormalize);
         static bool serializeConfig(std::string& path, const BuilderConfig& config);
         static bool deserializeConfig(const std::string& path, BuilderConfig& config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
+
+        // cv
+        static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, cv::Rect2i roi);
+        static std::vector<cv::cuda::GpuMat> generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size);
     };
 }
 
