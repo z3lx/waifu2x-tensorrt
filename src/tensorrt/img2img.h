@@ -30,7 +30,7 @@ namespace trt {
         bool load(const std::string& path, InferrerConfig& config);
         bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
 
-        bool process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2f overlap);
+        bool process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2d overlap);
 
     private:
         Logger gLogger;

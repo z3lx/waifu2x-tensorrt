@@ -334,8 +334,8 @@ catch (const std::exception& e) {
 }
 
 // overlap is normalized to [0, 1]
-bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2f overlap) try {
-
+// TODO: WARNING MESSAGES FOR ROUNDING ERRORS
+bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2d overlap) try {
     const cv::Size2i inputTileSize = {
         context->getTensorShape(engine->getIOTensorName(0)).d[3],
         context->getTensorShape(engine->getIOTensorName(0)).d[2]
@@ -351,23 +351,28 @@ bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv
         inputTileSize.width * scaling.y
     };
 
-    const cv::Point2i scaledOverlap = {
-        static_cast<int>(scaledOutputTileSize.width * overlap.x),
-        static_cast<int>(scaledOutputTileSize.height * overlap.y)
+    const cv::Size2i scaledInputTileSize = {
+        static_cast<int>(std::lround(static_cast<double>(outputTileSize.width) / scaledOutputTileSize.width * inputTileSize.width)),
+        static_cast<int>(std::lround(static_cast<double>(outputTileSize.height) / scaledOutputTileSize.height * inputTileSize.height))
     };
 
-    const cv::Point2f ratio = {
-        static_cast<float>(outputTileSize.width) / (inputTileSize.width * scaling.x),
-        static_cast<float>(outputTileSize.height) / (inputTileSize.height * scaling.y)
+    const cv::Point2i inputOverlap = {
+        static_cast<int>(std::lround(inputTileSize.width * overlap.x)),
+        static_cast<int>(std::lround(inputTileSize.height * overlap.y))
+    };
+
+    const cv::Point2i scaledOutputOverlap = {
+        static_cast<int>(std::lround(scaledOutputTileSize.width * overlap.x)),
+        static_cast<int>(std::lround(scaledOutputTileSize.height * overlap.y))
     };
 
     output.create(input.rows * scaling.x, input.cols * scaling.y, CV_32FC3);
     output.setTo(cv::Scalar(0, 0, 0));
-    const std::vector<cv::cuda::GpuMat> weights = generateTileWeights(scaledOverlap, outputTileSize); //CHANGE TO 1024
+    const std::vector<cv::cuda::GpuMat> weights = generateTileWeights(scaledOutputOverlap, outputTileSize);
 
     const cv::Point2i tiling = {
-        static_cast<int>(std::ceil(static_cast<float>(input.cols) / (inputTileSize.width * ratio.x - inputTileSize.width * overlap.x))),
-        static_cast<int>(std::ceil(static_cast<float>(input.rows) / (inputTileSize.height * ratio.y - inputTileSize.height * overlap.y)))
+        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.cols - inputOverlap.x) / (scaledInputTileSize.width - inputOverlap.x)))),
+        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.rows - inputOverlap.y) / (scaledInputTileSize.height - inputOverlap.y))))
     };
 
     const int tileCount = tiling.x * tiling.y;
@@ -381,16 +386,16 @@ bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv
         for (int j = 0; j < tiling.x; ++j) {
             // offset_border + offset_scaled_tile - offset_overlap
             inputTileRects.emplace_back(
-                -((inputTileSize.width - (inputTileSize.width * ratio.x)) / 2) + (j * inputTileSize.width * ratio.x) - (j * inputTileSize.width * overlap.x),
-                -((inputTileSize.height - (inputTileSize.height * ratio.y)) / 2) + (i * inputTileSize.height * ratio.y) - (i * inputTileSize.height * overlap.y),
+                -((inputTileSize.width - scaledInputTileSize.width) / 2) + (j * scaledInputTileSize.width) - (j * inputOverlap.x),
+                -((inputTileSize.height - scaledInputTileSize.height) / 2) + (i * scaledInputTileSize.height) - (i * inputOverlap.y),
                 inputTileSize.width,
                 inputTileSize.height
             );
 
             // offset_tile - offset_overlap
             cv::Rect2i outputTileRect;
-            outputTileRect.x = j * outputTileSize.width - (j * (outputTileSize.width / ratio.x) * overlap.x);
-            outputTileRect.y = i * outputTileSize.height - (i * (outputTileSize.height / ratio.y) * overlap.y);
+            outputTileRect.x = j * outputTileSize.width - (j * scaledOutputOverlap.x);
+            outputTileRect.y = i * outputTileSize.height - (i * scaledOutputOverlap.y);
             outputTileRect.width = outputTileRect.x + outputTileSize.width > output.cols ? output.cols - outputTileRect.x : outputTileSize.width;
             outputTileRect.height = outputTileRect.y + outputTileSize.height > output.rows ? output.rows - outputTileRect.y : outputTileSize.height;
             outputTileRects.emplace_back(outputTileRect);
