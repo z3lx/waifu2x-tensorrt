@@ -13,20 +13,28 @@ int main() {
 
     std::string imageDir = R"(C:\waifu2x-tensorrt\images\)";
     std::string imagePath = imageDir + "bg.png";
-    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise3_scale4x.NVIDIAGeForceRTX3060Ti.FP16.1.1.1.64.256.256.64.256.256.trt)";
+    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise1_scale4x.NVIDIAGeForceRTX3060Ti.FP16.1.1.1.256.256.256.256.256.256.trt)";
+    int deviceId = 0;
+    trt::Precision precision = trt::Precision::FP16;
     int batchSize = 1;
     int tileSize = 256;
+    cv::Point2i scaling(4, 4);
+    cv::Point2d overlap(0.125f, 0.125f);
 
-    trt::InferrerConfig inferConfig;
-    inferConfig.deviceId = 0;
-    inferConfig.precision = trt::Precision::FP16;
-    inferConfig.nbBatches = batchSize;
-    inferConfig.channels = 3;
-    inferConfig.height = tileSize;
-    inferConfig.width = tileSize;
+    int iterations = 100;
+
+    trt::RenderConfig renderConfig;
+    renderConfig.deviceId = deviceId;
+    renderConfig.precision = precision;
+    renderConfig.nbBatches = batchSize;
+    renderConfig.channels = 3;
+    renderConfig.height = tileSize;
+    renderConfig.width = tileSize;
+    renderConfig.scaling = scaling;
+    renderConfig.overlap = overlap;
 
     trt::Img2Img engine;
-    engine.load(modelPath, inferConfig);
+    engine.load(modelPath, renderConfig);
 
     cv::Mat input = cv::imread(imagePath);
     cv::Mat output;
@@ -35,18 +43,21 @@ int main() {
     gpuInput.upload(input);
     cv::cuda::cvtColor(gpuInput, gpuInput, cv::COLOR_BGR2RGB);
 
-    engine.process(gpuInput, gpuOutput, cv::Point2i(4, 4), cv::Point2f(0.125f, 0.125f));
+    engine.render(gpuInput, gpuOutput);
     cv::TickMeter tm;
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < iterations; ++i) {
         tm.start();
-        engine.process(gpuInput, gpuOutput, cv::Point2i(4, 4), cv::Point2f(0.125f, 0.125f));
+        engine.render(gpuInput, gpuOutput);
         tm.stop();
     }
-    std::cout << "Average time: " << tm.getTimeMilli() / 10 << std::endl;
+    std::cout << "Total time: " << tm.getTimeMilli() << std::endl;
+    std::cout << "Average time: " << tm.getTimeMilli() / iterations << std::endl;
 
     cv::cuda::cvtColor(gpuOutput, gpuOutput, cv::COLOR_RGB2BGR);
     gpuOutput.download(output);
     cv::imwrite(imageDir + "out.png", output);
+
+    system("pause");
 
     return 0;
 }
