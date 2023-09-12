@@ -28,13 +28,10 @@ namespace trt {
         virtual ~Img2Img();
         bool build(const std::string& path, const BuildConfig& config);
         bool load(const std::string& path, RenderConfig& config);
-        bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
-
         bool render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output);
 
     private:
         Logger gLogger;
-
         std::vector<std::pair<void*, size_t>> buffers;
         RenderConfig renderConfig;
         cv::Size2i inputTileSize;
@@ -49,14 +46,14 @@ namespace trt {
         std::unique_ptr<nvinfer1::ICudaEngine> engine;
         std::unique_ptr<nvinfer1::IExecutionContext> context;
 
-        static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch, bool normalize);
-        static std::vector<cv::cuda::GpuMat> imagesFromBlob(cv::cuda::GpuMat& blob, nvinfer1::Dims32 shape, bool denormalize);
+        bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
+        static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch);
+        static std::vector<cv::cuda::GpuMat> imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape);
         static bool serializeConfig(std::string& path, const BuildConfig& config);
         static bool deserializeConfig(const std::string& path, BuildConfig& config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
 
-        // cv
-        static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, cv::Rect2i roi);
+        static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi);
         static std::vector<cv::cuda::GpuMat> generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size);
     };
 }
