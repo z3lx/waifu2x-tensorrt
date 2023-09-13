@@ -32,6 +32,8 @@ namespace trt {
 
     private:
         Logger gLogger;
+
+        cv::cuda::Stream stream = NULL;
         std::vector<std::pair<void*, size_t>> buffers;
         RenderConfig renderConfig;
         cv::Size2i inputTileSize;
@@ -47,14 +49,14 @@ namespace trt {
         std::unique_ptr<nvinfer1::IExecutionContext> context;
 
         bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
-        static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch);
-        static std::vector<cv::cuda::GpuMat> imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape);
+        static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
+        static std::vector<cv::cuda::GpuMat> imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
+        static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
+        static std::vector<cv::cuda::GpuMat> generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
+
         static bool serializeConfig(std::string& path, const BuildConfig& config);
         static bool deserializeConfig(const std::string& path, BuildConfig& config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
-
-        static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi);
-        static std::vector<cv::cuda::GpuMat> generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size);
     };
 }
 
