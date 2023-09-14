@@ -318,7 +318,7 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
         }
     }
 
-    for (size_t i = 0; i < tileCount;) {
+    for (size_t i = 0; i < tileCount; i += renderConfig.nbBatches) {
         std::vector<cv::cuda::GpuMat> inputTiles;
         inputTiles.reserve(renderConfig.nbBatches);
         for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
@@ -328,39 +328,42 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
                 inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
             }
         }
+
         std::vector<cv::cuda::GpuMat> outputTiles;
         outputTiles.reserve(renderConfig.nbBatches);
         infer(inputTiles, outputTiles);
 
-        if (!(renderConfig.overlap.x == 0 && renderConfig.overlap.y == 0)) {
-            for (size_t j = 0; j < renderConfig.nbBatches; ++j, ++i) {
-                if (i >= tileCount) {
-                    break;
-                }
+        const bool overlapping = renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0;
+        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
+            if (i + j == tileCount) {
+                break;
+            }
+            cv::Rect2i& outputTileRect = outputTileRects[i + j];
 
+            if (overlapping) {
                 // Blend left
-                if (outputTileRects[i].x != 0) {
+                if (outputTileRect.x != 0) {
                     cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend top
-                if (outputTileRects[i].y != 0) {
+                if (outputTileRect.y != 0) {
                     cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend right
-                if (outputTileRects[i].x + outputTileRects[i].width < output.cols) {
+                if (outputTileRect.x + outputTileRect.width < output.cols) {
                     cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend bottom
-                if (outputTileRects[i].y + outputTileRects[i].height < output.rows) {
+                if (outputTileRect.y + outputTileRect.height < output.rows) {
                     cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j], 1, -1, stream);
                 }
-
-                cv::Rect2i roi(0, 0, outputTileRects[i].width, outputTileRects[i].height);
-                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i]), output(outputTileRects[i]), cv::noArray(), -1, stream);
             }
+
+            cv::Rect2i roi(0, 0, outputTileRect.width, outputTileRect.height);
+            cv::cuda::add(outputTiles[j](roi), output(outputTileRect), output(outputTileRect), cv::noArray(), -1, stream);
         }
     }
     output.convertTo(output, CV_8UC3, 255.0, stream);
