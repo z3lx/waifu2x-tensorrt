@@ -11,8 +11,6 @@
 #include <opencv2/core/cuda.hpp>
 #include <opencv2/cudawarping.hpp>
 #include <opencv2/cudaarithm.hpp>
-#include <plog/Log.h>
-#include <plog/Severity.h>
 #include <NvOnnxParser.h>
 #include <NvInfer.h>
 
@@ -29,11 +27,12 @@ namespace trt {
         bool build(const std::string& path, const BuildConfig& config);
         bool load(const std::string& path, RenderConfig& config);
         bool render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output);
+        void setLogCallback(LogCallback callback);
 
     private:
-        Logger gLogger;
+        Logger logger;
 
-        cv::cuda::Stream stream = NULL;
+        cv::cuda::Stream stream{};
         std::vector<std::pair<void*, size_t>> buffers;
         RenderConfig renderConfig;
         cv::Size2i inputTileSize;
