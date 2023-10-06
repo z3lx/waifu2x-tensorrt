@@ -13,6 +13,7 @@
 #include <opencv2/cudaarithm.hpp>
 #include <NvOnnxParser.h>
 #include <NvInfer.h>
+#include <queue>
 
 #include "config.h"
 #include "helper.h"
@@ -56,6 +57,13 @@ namespace trt {
         static bool serializeConfig(std::string& path, const BuildConfig& config);
         static bool deserializeConfig(const std::string& path, BuildConfig& config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
+
+        static constexpr int ttaSize = 8;
+        std::queue<std::tuple<int, int>> tileIndices;
+        std::vector<cv::cuda::GpuMat> ttaInputTiles;
+        cv::cuda::GpuMat ttaOutputTile;
+        cv::cuda::GpuMat tmpInputMat;
+        cv::cuda::GpuMat tmpOutputMat;
     };
 }
 
