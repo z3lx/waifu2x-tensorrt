@@ -1,8 +1,6 @@
 #ifndef WAIFU2X_TENSORRT_TRT_CONFIG_H
 #define WAIFU2X_TENSORRT_TRT_CONFIG_H
 
-#include <cstdint>
-
 namespace trt {
     enum class Precision {
         TF32,

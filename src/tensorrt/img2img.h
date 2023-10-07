@@ -1,24 +1,15 @@
 #ifndef WAIFU2X_TENSORRT_TRT_IMG2IMG_H
 #define WAIFU2X_TENSORRT_TRT_IMG2IMG_H
 
-#include <chrono>
-#include <filesystem>
-#include <fstream>
-#include <string>
 #include <memory>
-
-#include <opencv2/core.hpp>
-#include <opencv2/core/cuda.hpp>
-#include <opencv2/cudawarping.hpp>
-#include <opencv2/cudaarithm.hpp>
-#include <NvOnnxParser.h>
-#include <NvInfer.h>
 #include <queue>
+#include <string>
+
+#include <NvInfer.h>
+#include <opencv2/core/cuda.hpp>
 
 #include "config.h"
-#include "helper.h"
 #include "logger.h"
-#include "utilities/time.h"
 
 namespace trt {
     class Img2Img {
@@ -42,7 +33,7 @@ namespace trt {
         cv::Size2i scaledOutputTileSize;
         cv::Point2i inputOverlap;
         cv::Point2i scaledOutputOverlap;
-        std::vector<cv::cuda::GpuMat> weights;
+        std::array<cv::cuda::GpuMat, 4> weights;
 
         std::unique_ptr<nvinfer1::IRuntime> runtime;
         std::unique_ptr<nvinfer1::ICudaEngine> engine;
@@ -52,14 +43,17 @@ namespace trt {
         static cv::cuda::GpuMat blobFromImages(const std::vector<cv::cuda::GpuMat>& batch, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
         static std::vector<cv::cuda::GpuMat> imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
         static cv::cuda::GpuMat padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
-        static std::vector<cv::cuda::GpuMat> generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
+        static void createTileWeights(std::array<cv::cuda::GpuMat, 4>& weights, const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream = cv::cuda::Stream::Null());
 
         static bool serializeConfig(std::string& path, const BuildConfig& config);
         static bool deserializeConfig(const std::string& path, BuildConfig& config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
 
-        static constexpr int ttaSize = 8;
-        std::queue<std::tuple<int, int>> tileIndices;
+        inline std::tuple<const int, std::vector<cv::Rect2i>, std::vector<cv::Rect2i>> calculateTiles(const cv::Rect2i& inputRect, const cv::Rect2i& outputRect);
+        inline void applyBlending(const cv::cuda::GpuMat& src, cv::cuda::GpuMat& dst, const cv::Rect2i& srcRect, const cv::Rect2i& dstRect);
+        inline void applyAugmentation(const cv::cuda::GpuMat& src, cv::cuda::GpuMat& dst, const cv::Size2i& dstSize, int augmentationIndex);
+        inline void reverseAugmentation(const cv::cuda::GpuMat& src, cv::cuda::GpuMat& dst, const cv::Size2i& dstSize, int augmentationIndex);
+
         std::vector<cv::cuda::GpuMat> ttaInputTiles;
         cv::cuda::GpuMat ttaOutputTile;
         cv::cuda::GpuMat tmpInputMat;
