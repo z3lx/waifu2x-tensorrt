@@ -37,12 +37,18 @@ add_executable(waifu2x_tensorrt
     src/main.cpp
     src/tensorrt/config.h
     src/tensorrt/helper.h
-    src/tensorrt/img2img.cpp
     src/tensorrt/img2img.h
+    src/tensorrt/img2img_base.cpp
+    src/tensorrt/img2img_build.cpp
+    src/tensorrt/img2img_infer.cpp
+    src/tensorrt/img2img_load.cpp
+    src/tensorrt/img2img_render.cpp
+    src/tensorrt/img2img_serialize.cpp
     src/tensorrt/logger.cpp
     src/tensorrt/logger.h
     src/utilities/sha256.h
     src/utilities/time.h
+    src/utilities/path.h
 )
 
 target_include_directories(waifu2x_tensorrt PUBLIC

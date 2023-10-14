@@ -7,7 +7,6 @@ void trt::Logger::setLogCallback(LogCallback callback) {
     logCallback = std::move(callback);
 }
 
-#define LOG(severity, message) log(severity, message, __FILE__, __FUNCTION__, __LINE__)
 void trt::Logger::log(trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line) {
     if (logCallback) {
         logCallback(severity, message, file, function, line);
