@@ -43,7 +43,6 @@ add_executable(waifu2x_tensorrt
     src/tensorrt/img2img_infer.cpp
     src/tensorrt/img2img_load.cpp
     src/tensorrt/img2img_render.cpp
-    src/tensorrt/img2img_serialize.cpp
     src/tensorrt/logger.cpp
     src/tensorrt/logger.h
     src/utilities/sha256.h

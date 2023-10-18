@@ -1,8 +1,53 @@
 #include "img2img.h"
 #include "utilities/path.h"
 #include "utilities/sha256.h"
+#include <nlohmann/json.hpp>
 #include <NvOnnxParser.h>
 #include <fstream>
+
+std::string getConfigHash(const trt::BuildConfig& config) {
+    std::ostringstream oss;
+    auto deviceName = trt::cudaGetDeviceName(config.deviceId);
+    deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
+    oss << deviceName << ".";
+    switch (config.precision) {
+        case trt::Precision::FP16:
+            oss << "FP16";
+            break;
+        case trt::Precision::TF32:
+            oss << "TF32";
+            break;
+    }
+    oss << ".";
+    oss << config.minBatchSize << "." << config.optBatchSize << "." << config.maxBatchSize << "."
+        << config.minChannels << "." << config.optChannels << "." << config.maxChannels << "."
+        << config.minWidth << "." << config.optWidth << "." << config.maxWidth << "."
+        << config.minHeight << "." << config.optHeight << "." << config.maxHeight;
+    return utils::sha256(oss.str());
+}
+
+void serializeConfig(const std::string& path, const trt::BuildConfig& config) {
+    const auto j = nlohmann::ordered_json{
+        {"deviceName", trt::cudaGetDeviceName(config.deviceId)},
+        {"precision", config.precision == trt::Precision::FP16 ? "FP16" : "TF32"},
+        {"minBatchSize", config.minBatchSize},
+        {"optBatchSize", config.optBatchSize},
+        {"maxBatchSize", config.maxBatchSize},
+        {"minChannels", config.minChannels},
+        {"optChannels", config.optChannels},
+        {"maxChannels", config.maxChannels},
+        {"minWidth", config.minWidth},
+        {"optWidth", config.optWidth},
+        {"maxWidth", config.maxWidth},
+        {"minHeight", config.minHeight},
+        {"optHeight", config.optHeight},
+        {"maxHeight", config.maxHeight}
+    };
+    std::ofstream outputFile(path);
+    if (!outputFile.is_open())
+        throw std::runtime_error("could not open config \"" + path + "\"");
+    outputFile << std::setw(4) << j;
+}
 
 // TODO: ADD INPUT TENSOR SHAPE CONSTRAINTS
 // TODO: SUPPORT MULTIPLE OPTIMIZATION PROFILES
@@ -124,25 +169,4 @@ bool trt::Img2Img::build(const std::string& onnxModelPath, const BuildConfig& co
 catch (const std::exception& e) {
     logger.LOG(error, "Engine build failed unexpectedly: " + std::string(e.what()) + ".");
     return false;
-}
-
-std::string trt::Img2Img::getConfigHash(const trt::BuildConfig& config) {
-    std::ostringstream oss;
-    auto deviceName = cudaGetDeviceName(config.deviceId);
-    deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
-    oss << deviceName << ".";
-    switch (config.precision) {
-        case Precision::FP16:
-            oss << "FP16";
-            break;
-        case Precision::TF32:
-            oss << "TF32";
-            break;
-    }
-    oss << ".";
-    oss << config.minBatchSize << "." << config.optBatchSize << "." << config.maxBatchSize << "."
-        << config.minChannels << "." << config.optChannels << "." << config.maxChannels << "."
-        << config.minWidth << "." << config.optWidth << "." << config.maxWidth << "."
-        << config.minHeight << "." << config.optHeight << "." << config.maxHeight;
-    return utils::sha256(oss.str());
 }
