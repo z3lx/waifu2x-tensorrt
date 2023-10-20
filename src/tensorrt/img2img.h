@@ -17,7 +17,7 @@ namespace trt {
         virtual ~Img2Img();
         bool build(const std::string& path, const BuildConfig& config);
         bool load(const std::string& path, RenderConfig& config);
-        bool render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output);
+        bool render(const cv::Mat& src, cv::Mat& dst);
         void setLogCallback(LogCallback callback);
         // setProgressCallback
 
@@ -34,6 +34,8 @@ namespace trt {
         cv::cuda::Stream stream;
         std::vector<std::pair<void*, size_t>> buffers;
         RenderConfig renderConfig;
+        cv::cuda::GpuMat input;
+        cv::cuda::GpuMat output;
         nvinfer1::Dims inputTensorShape;
         nvinfer1::Dims outputTensorShape;
 

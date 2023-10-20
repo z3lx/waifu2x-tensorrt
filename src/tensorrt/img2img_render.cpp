@@ -221,8 +221,10 @@ void reverseAugmentation(const cv::cuda::GpuMat& src, cv::cuda::GpuMat& dst, con
     }
 }
 
-bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try {
+bool trt::Img2Img::render(const cv::Mat& src, cv::Mat& dst) try {
     // Allocate output
+    input.upload(src, stream);
+    cv::cuda::cvtColor(input, input, cv::COLOR_BGR2RGB, 0, stream);
     output.create(input.rows * renderConfig.scaling, input.cols * renderConfig.scaling, CV_32FC3);
     output.setTo(cv::Scalar(0, 0, 0), stream);
 
@@ -340,7 +342,8 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
     // Postprocess output
     output.convertTo(output, CV_8UC3, 255.0, stream);
     cv::cuda::cvtColor(output, output, cv::COLOR_RGB2BGR, 0, stream);
-    stream.waitForCompletion();
+    output.download(dst, stream);
+    //stream.waitForCompletion();
 
     return true;
 }
