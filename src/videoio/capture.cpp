@@ -3,13 +3,19 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <utility>
+
+#if defined(_WIN32) || defined(_WIN64)
+#define popen _popen
+#define pclose _pclose
+#endif
 
 VideoCapture::VideoCapture()
     : ffmpegDir("") {
 
 }
 
-VideoCapture::VideoCapture(std::string ffmpegDir)
+VideoCapture::VideoCapture(std::string  ffmpegDir)
     : ffmpegDir(std::move(ffmpegDir)) {
 
 }
@@ -48,8 +54,8 @@ void VideoCapture::open(const std::string& path) try {
     // Check if ffmpeg and ffprobe exist
     auto ffmpegCmd = ffmpegDir + "ffmpeg -version";
     auto ffprobeCmd = ffmpegDir + "ffprobe -version";
-    if (_popen(ffmpegCmd.c_str(), "r") == nullptr ||
-        _popen(ffprobeCmd.c_str(), "r") == nullptr) {
+    if (popen(ffmpegCmd.c_str(), "r") == nullptr ||
+        popen(ffprobeCmd.c_str(), "r") == nullptr) {
         throw std::runtime_error("ffmpeg or ffprobe not found");
     }
 
@@ -63,7 +69,7 @@ void VideoCapture::open(const std::string& path) try {
         "ffprobe -v error -select_streams v:0 -show_entries "
         "stream=width,height,r_frame_rate,nb_frames "
         "-of default=noprint_wrappers=1 \"" + path + "\"";
-    pipe = _popen(ffprobeCmd.c_str(), "r");
+    pipe = popen(ffprobeCmd.c_str(), "r");
     if (!pipe) {
         throw std::runtime_error("could not open ffprobe with command"
             "\"" + ffprobeCmd + "\"");
@@ -74,7 +80,7 @@ void VideoCapture::open(const std::string& path) try {
     output.reserve(128);
     while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
         output += buffer;
-    _pclose(pipe);
+    pclose(pipe);
     pipe = nullptr;
 
     std::transform(output.begin(), output.end(), output.begin(), ::tolower);
@@ -89,9 +95,10 @@ void VideoCapture::open(const std::string& path) try {
 
     // Open ffmpeg
     ffmpegCmd = ffmpegDir +
-        "ffmpeg -i \"" + path + "\" -f image2pipe -vcodec rawvideo "
+        "ffmpeg -v error "
+        "-i \"" + path + "\" -f image2pipe -vcodec rawvideo "
         "-pix_fmt bgr24 -";
-    pipe = _popen(ffmpegCmd.c_str(), "rb");
+    pipe = popen(ffmpegCmd.c_str(), "rb");
     if (!pipe) {
         throw std::runtime_error("could not open ffmpeg with command"
             "\"" + ffmpegCmd + "\"");
@@ -122,3 +129,6 @@ void VideoCapture::release() {
     pipe = nullptr;
     opened = false;
 }
+
+#undef popen
+#undef pclose

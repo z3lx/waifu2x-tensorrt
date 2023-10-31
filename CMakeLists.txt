@@ -50,6 +50,8 @@ add_executable(waifu2x_tensorrt
     src/utilities/path.h
     src/videoio/capture.cpp
     src/videoio/capture.h
+    src/videoio/writer.cpp
+    src/videoio/writer.h
 )
 
 target_include_directories(waifu2x_tensorrt PUBLIC

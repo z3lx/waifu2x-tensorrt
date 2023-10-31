@@ -16,7 +16,7 @@ namespace trt {
         Img2Img();
         virtual ~Img2Img();
         bool build(const std::string& path, const BuildConfig& config);
-        bool load(const std::string& path, RenderConfig& config);
+        bool load(const std::string& path, const RenderConfig& config);
         bool render(const cv::Mat& src, cv::Mat& dst);
         void setLogCallback(LogCallback callback);
         // setProgressCallback

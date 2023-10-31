@@ -31,7 +31,6 @@ namespace trt {
     };
 
     struct RenderConfig {
-        bool tta = false;
         int deviceId = 0;
         Precision precision = Precision::FP16;
         int batchSize = 1;
@@ -39,7 +38,8 @@ namespace trt {
         int height = 256;
         int width = 256;
         int scaling = 4;
-        cv::Point2d overlap = cv::Point2d(0.125f, 0.125f);
+        cv::Point2d overlap = cv::Point2d(0.0625, 0.0625);
+        bool tta = false;
     };
 }
 
