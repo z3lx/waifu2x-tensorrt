@@ -71,6 +71,9 @@ void VideoWriter::release() noexcept {
     quality = -1;
 }
 
+#undef popen
+#undef pclose
+
 // region Getters and setters
 const std::string& VideoWriter::getFfmpegDir() const noexcept {
     return ffmpegDir;
@@ -170,6 +173,3 @@ VideoWriter& VideoWriter::setQuality(int value) {
     return *this;
 }
 // endregion
-
-#undef popen
-#undef pclose

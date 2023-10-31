@@ -34,18 +34,18 @@ public:
     // endregion
 
 private:
+    FILE* pipe = nullptr;
+    bool opened = false;
+
     std::string ffmpegDir;
-    double frameRate = -1;
     cv::Size2i frameSize = cv::Size2i(-1, -1);
+    double frameRate = -1;
     std::string outputFile;
     std::string pixelFormat;
     std::string codec;
     int constantRateFactor = -1;
     int quality = -1;
     // tune, preset, hardware accel...
-
-    FILE* pipe = nullptr;
-    bool opened = false;
 };
 
 #endif //WAIFU2X_TENSORRT_VIDEOIO_WRITER_H
