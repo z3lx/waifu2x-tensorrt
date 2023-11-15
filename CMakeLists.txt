@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.26)
-project(waifu2x_tensorrt)
+project(waifu2x-tensorrt)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
@@ -46,7 +46,7 @@ if(NOT cli11_POPULATED)
 endif()
 add_subdirectory(${cli11_SOURCE_DIR})
 
-add_executable(waifu2x_tensorrt
+add_executable(waifu2x-tensorrt
     src/main.cpp
     src/tensorrt/config.h
     src/tensorrt/helper.h
@@ -67,7 +67,7 @@ add_executable(waifu2x_tensorrt
     src/videoio/writer.h
 )
 
-target_include_directories(waifu2x_tensorrt PUBLIC
+target_include_directories(waifu2x-tensorrt PUBLIC
     ${PROJECT_SOURCE_DIR}/src
     ${OpenCV_INCLUDE_DIRS}
     ${CUDA_INCLUDE_DIRS}
@@ -77,7 +77,7 @@ target_include_directories(waifu2x_tensorrt PUBLIC
     ${cli11_SOURCE_DIR}/include
 )
 
-target_link_libraries(waifu2x_tensorrt PUBLIC
+target_link_libraries(waifu2x-tensorrt PUBLIC
     ${OpenCV_LIBS}
     ${CUDA_LIBRARIES}
     ${TensorRT_LIBRARIES}
