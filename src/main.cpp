@@ -1,13 +1,12 @@
 #include "tensorrt/img2img.h"
 #include "videoio/capture.h"
 #include "videoio/writer.h"
-#include <argparse/argparse.hpp>
+#include <CLI/CLI.hpp>
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
 #define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL", "OFF" }
 #include <spdlog/sinks/stdout_color_sinks.h>
-#include <filesystem>
 
 int main(int argc, char *argv[]) {
     auto console = spdlog::stdout_color_mt("console");
@@ -15,74 +14,118 @@ int main(int argc, char *argv[]) {
     console->set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
 
     // region Argument Parser
-    argparse::ArgumentParser modelParser("model", "", argparse::default_arguments::none);
-    modelParser.add_argument("--model")
-        .help("Model to use.")
-        //.choices("cunet/art", "swin_unet/art", "swin_unet/art_scan", "swin_unet/photo")
-        .required();
-    modelParser.add_argument("--scale")
-        .help("Scale factor to use.")
-        //.choices(1, 2, 4)
-        .default_value(2)
-        .scan<'i', int>();
-    modelParser.add_argument("--noise")
-        .help("Noise level to use.")
-        //.choices(-1, 0, 1, 2, 3)
-        .default_value(1)
-        .scan<'i', int>();
-    modelParser.add_argument("--device")
-        .help("GPU Device ID to use.")
-        .default_value(0)
-        .scan<'i', int>();
-    modelParser.add_argument("--precision")
-        .help("Precision to use.")
-        //.choices("FP16", "TF32")
-        .default_value("FP16");
-    modelParser.add_argument("--batchSize")
-        .help("Model batch size.")
-        .default_value(1)
-        .scan<'i', int>();
-    modelParser.add_argument("--tileSize")
-        .help("Model tile size.")
-        .nargs(1)
-        //.choices(64, 256, 400, 640)
-        .default_value(256)
-        .scan<'i', int>();
+    CLI::App app("waifu2x-tensorrt");
+    app.fallthrough()
+        ->require_subcommand(1);
 
-    argparse::ArgumentParser renderCommand("render");
-    renderCommand.add_description("Render image(s).");
-    renderCommand.add_argument("-i", "--input")
-        .help("Input images(s) to render.")
-        .nargs(argparse::nargs_pattern::at_least_one)
-        .required();
-    renderCommand.add_argument("-o", "--output")
-        .help("Output images(s) destination.")
-        .required();
-    renderCommand.add_parents(modelParser);
-    renderCommand.add_argument("--blend")
-        .help("Percentage of overlap between two tiles to blend.")
-        .default_value(1.0 / 16.0)
-        .scan<'g', double>();
-    renderCommand.add_argument("--tta")
-        .help("Use test-time augmentation.")
-        .default_value(false)
-        .implicit_value(true);
+    std::string model;
+    const auto modelChoices = {
+        "cunet/art",
+        "swin_unet/art",
+        "swin_unet/art_scan",
+        "swin_unet/photo"
+    };
+    app.add_option("--model", model)
+        ->description("Set the model to use")
+        ->check(CLI::IsMember(modelChoices))
+        ->required();
 
-    argparse::ArgumentParser buildCommand("build");
-    buildCommand.add_description("Build model.");
-    buildCommand.add_parents(modelParser);
+    int scale;
+    const auto scaleChoices = {
+        1, 2, 4
+    };
+    app.add_option("--scale", scale)
+        ->description("Set the scale factor")
+        ->check(CLI::IsMember(scaleChoices))
+        ->required();
 
-    argparse::ArgumentParser program("waifu2x");
-    program.add_subparser(renderCommand);
-    program.add_subparser(buildCommand);
+    int noise;
+    const auto noiseChoices = {
+        -1, 0, 1, 2, 3
+    };
+    app.add_option("--noise", noise)
+        ->description("Set the noise level")
+        ->check(CLI::IsMember(noiseChoices))
+        ->required();
+
+    int batchSize;
+    app.add_option("--batchSize", batchSize)
+        ->description("Set the batch size")
+        ->check(CLI::PositiveNumber)
+        ->required();
+
+    int tileSize;
+    const auto tileSizeChoices = {
+        64, 256, 400, 640
+    };
+    app.add_option("--tileSize", tileSize)
+        ->description("Set the tile size")
+        ->check(CLI::IsMember(tileSizeChoices))
+        ->required();
+
+    int deviceId = 0;
+    app.add_option("--device", deviceId)
+        ->description("Set the GPU device ID")
+        ->default_val(deviceId)
+        ->check(CLI::PositiveNumber);
+
+    trt::Precision precision = trt::Precision::FP16;
+    const std::map<std::string, trt::Precision> precisionMap = {
+        {"fp16", trt::Precision::FP16},
+        {"tf32", trt::Precision::TF32}
+    };
+    app.add_option("--precision", precision)
+        ->description("Set the precision")
+        ->default_val(precision)
+        ->transform(CLI::CheckedTransformer(precisionMap, CLI::ignore_case));
+
+    auto render = app.add_subcommand("render", "Render image(s)/video(s)");
+
+    std::vector<std::string> input;
+    render->add_option("-i, --input", input)
+        ->description("Set the input image(s)/video(s)")
+        ->check(CLI::ExistingFile)
+        ->required();
+
+    std::string output;
+    render->add_option("-o, --output", output)
+        ->description("Set the output directory")
+        ->check(CLI::ExistingDirectory)
+        ->required();
+
+    double blend = 1.0/16.0;
+    const auto blendChoices = {
+        1.0/8.0,
+        1.0/16.0,
+        1.0/32.0,
+        0.0
+    };
+    render->add_option("--blend", blend)
+        ->description("Set the percentage of overlap between two tiles to blend")
+        ->default_val(blend)
+        ->check(CLI::IsMember(blendChoices));
+
+    bool tta = false;
+    render->add_flag("--tta", tta)
+        ->description("Enable test-time augmentation")
+        ->default_val(tta);
+
+    auto build = app.add_subcommand("build", "Build model");
 
     try {
-        program.parse_args(argc, argv);
-    } catch (const std::runtime_error& err) {
-        std::cout << err.what() << std::endl;
-        std::cout << program;
-        exit(-1);
+        (app).parse((argc), (argv));
+        if (model == "cunet/art" && scale == 4)
+            throw std::runtime_error("cunet/art does not support scale factor 4.");
+        if (noise == -1 && scale == 1)
+            throw std::runtime_error("Noise level -1 does not support scale factor 1.");
     }
+    catch (const CLI::ParseError& e) {
+        return (app).exit(e);
+    }
+    catch (const std::exception& e) {
+        std::cerr << e.what();
+        exit(-1);
+    };
     // endregion
 
     trt::LogCallback callback = [&console](trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line) {
@@ -112,75 +155,29 @@ int main(int argc, char *argv[]) {
     trt::Img2Img engine;
     engine.setLogCallback(callback);
 
-    argparse::ArgumentParser* parser;
-    if (program.is_subcommand_used(renderCommand)) {
-        parser = &renderCommand;
-    } else if (program.is_subcommand_used(buildCommand)) {
-        parser = &buildCommand;
-    } else {
-        console->error("No subcommand used.");
-        exit(-1);
-    }
-
-    // check if model, scale and noise are compatible
-    const auto model = parser->get<std::string>("model");
-    const auto scale = parser->get<int>("scale");
-    const auto noise = parser->get<int>("noise");
-    if (model == "cunet/art" && scale == 4) {
-        console->error("cunet/art does not support scale factor 4.");
-        exit(-1);
-    }
-    if (noise == -1 && scale == 1) {
-        console->error("Noise level -1 does not support scale factor 1.");
-        exit(-1);
-    }
-
     const auto modelPath = "models/" + model + "/"
         + (noise == -1 ? "" : "noise" + std::to_string(noise) + "_")
         + (scale == 1 ? "" : "scale" + std::to_string(scale) + "x")
         + ".onnx";
 
-    if (program.is_subcommand_used(renderCommand)) {
-        // check if input exists
-        const auto inputPaths = renderCommand.get<std::vector<std::string>>("input");
-        for (const auto& path : inputPaths) {
-            if (!std::filesystem::exists(path)) {
-                console->error("Input file \"{}\" does not exist.", path);
-                exit(-1);
-            }
-        }
-
-        // check if output dir exists
-        const auto outputPath = renderCommand.get<std::string>("output");
-        if (!std::filesystem::exists(outputPath)) {
-            console->error("Output directory \"{}\" does not exist.", outputPath);
-            exit(-1);
-        }
-
-        // check if blend is in range
-        const auto blend = renderCommand.get<double>("blend");
-        if (blend < 0.0 || blend >= 1.0) {
-            console->error("Blend must be in range [0, 1[.");
-            exit(-1);
-        }
-
+    if (render->parsed()) {
         trt::RenderConfig config {
-            .deviceId = parser->get<int>("device"),
-            .precision = parser->get<std::string>("precision") == "FP16" ? trt::Precision::FP16 : trt::Precision::TF32,
-            .batchSize = parser->get<int>("batchSize"),
+            .deviceId = deviceId,
+            .precision = precision,
+            .batchSize = batchSize,
             .channels = 3,
-            .height = parser->get<int>("tileSize"),
-            .width = parser->get<int>("tileSize"),
+            .height = tileSize,
+            .width = tileSize,
             .scaling = scale,
             .overlap = cv::Point2d(blend, blend),
-            .tta = renderCommand.get<bool>("tta")
+            .tta = tta
         };
 
         engine.load(modelPath, config);
         VideoCapture capture;
         VideoWriter writer;
 
-        for (const auto& path : inputPaths) {
+        for (const auto& path : input) {
             capture.open(path);
 
             const auto frameCount = capture.getFrameCount();
@@ -190,9 +187,9 @@ int main(int argc, char *argv[]) {
             writer.setFrameSize(outputFrame.size());
 
             if (frameCount == 1) {
-                writer.setOutputFile(outputPath + "\\out.png");
+                writer.setOutputFile(output + "\\out.png");
             } else {
-                writer.setOutputFile(outputPath + "\\out.mp4")
+                writer.setOutputFile(output + "\\out.mp4")
                     .setFrameRate(capture.getFrameRate())
                     .setPixelFormat("yuv420p")
                     .setCodec("libx264");
@@ -207,7 +204,23 @@ int main(int argc, char *argv[]) {
             capture.release();
             writer.release();
         }
-    } else if (program.is_subcommand_used(buildCommand)) {
-
+    } else if (build->parsed()) {
+        trt::BuildConfig config {
+            .deviceId = deviceId,
+            .precision = precision,
+            .minBatchSize = batchSize,
+            .optBatchSize = batchSize,
+            .maxBatchSize = batchSize,
+            .minChannels = 3,
+            .optChannels = 3,
+            .maxChannels = 3,
+            .minWidth = tileSize,
+            .optWidth = tileSize,
+            .maxWidth = tileSize,
+            .minHeight = tileSize,
+            .optHeight = tileSize,
+            .maxHeight = tileSize,
+        };
+        engine.build(modelPath, config);
     }
 }
