@@ -43,7 +43,7 @@ private:
     std::string outputFile;
     std::string pixelFormat;
     std::string codec;
-    int constantRateFactor = -1;
+    int crf = -1;
     int quality = -1;
     // tune, preset, hardware accel...
 };
