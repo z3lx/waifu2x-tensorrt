@@ -84,9 +84,13 @@ int main(int argc, char *argv[]) {
 
     std::vector<std::filesystem::path> inputPaths;
     render->add_option("-i, --input", inputPaths)
-        ->description("Set the input image(s)/video(s)")
+        ->description("Set the input paths")
         ->check(CLI::ExistingPath)
         ->required();
+
+    bool recursive = false;
+    render->add_flag("--recursive", recursive)
+        ->description("Search for input files recursively");
 
     std::filesystem::path outputDirectory;
     render->add_option("-o, --output", outputDirectory)
@@ -145,7 +149,7 @@ int main(int argc, char *argv[]) {
         ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
         ".mp4", ".avi", ".mkv", ".avi"
     };
-    auto files = utils::findFilesByExtension(inputPaths, extensions, true);
+    auto files = utils::findFilesByExtension(inputPaths, extensions, recursive);
 
     trt::LogCallback callback = [&console](trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line) {
         const auto s = "[" + function + "@" + std::to_string(line) + "] " + message;
