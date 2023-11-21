@@ -92,7 +92,7 @@ std::string getEnginePath(const std::string& modelPath, const trt::RenderConfig&
             path.extension().string() != ".trt")
             continue;
 
-        std::string configPath = utils::removeFileExtension(path.string()) + ".json";
+        std::string configPath = std::filesystem::path(path).replace_extension("").string() + ".json";
         if (!fs::exists(configPath))
             continue;
 

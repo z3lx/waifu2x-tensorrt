@@ -1,8 +1,8 @@
 #include "img2img.h"
-#include "utilities/path.h"
 #include "utilities/sha256.h"
 #include <nlohmann/json.hpp>
 #include <NvOnnxParser.h>
+#include <filesystem>
 #include <fstream>
 
 std::string getConfigHash(const trt::BuildConfig& config) {
@@ -148,7 +148,8 @@ bool trt::Img2Img::build(const std::string& onnxModelPath, const BuildConfig& co
     }
 
     // Serialize network
-    const auto basePath = utils::removeFileExtension(onnxModelPath) + "_" + getConfigHash(config).substr(0, 16);
+    const auto basePath = std::filesystem::path(onnxModelPath).replace_extension("").string()
+        + "_" + getConfigHash(config).substr(0, 16);
     const auto configPath = basePath + ".json";
     const auto enginePath = basePath + ".trt";
     serializeConfig(configPath, config);
