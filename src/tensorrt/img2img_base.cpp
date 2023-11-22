@@ -9,6 +9,10 @@ trt::Img2Img::~Img2Img() {
     }
 }
 
-void trt::Img2Img::setLogCallback(LogCallback callback) {
-    logger.setLogCallback(std::move(callback));
+void trt::Img2Img::setMessageCallback(MessageCallback callback) {
+    logger.setMessageCallback(std::move(callback));
+}
+
+void trt::Img2Img::setProgressCallback(trt::ProgressCallback callback) {
+    logger.setProgressCallback(std::move(callback));
 }

@@ -18,8 +18,8 @@ namespace trt {
         bool build(const std::string& path, const BuildConfig& config);
         bool load(const std::string& path, const RenderConfig& config);
         bool render(const cv::Mat& src, cv::Mat& dst);
-        void setLogCallback(LogCallback callback);
-        // setProgressCallback
+        void setMessageCallback(MessageCallback callback);
+        void setProgressCallback(ProgressCallback callback);
 
     private:
         bool infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs);
@@ -36,8 +36,8 @@ namespace trt {
         RenderConfig renderConfig;
         cv::cuda::GpuMat input;
         cv::cuda::GpuMat output;
-        nvinfer1::Dims inputTensorShape;
-        nvinfer1::Dims outputTensorShape;
+        nvinfer1::Dims inputTensorShape{};
+        nvinfer1::Dims outputTensorShape{};
 
         // Blending
         std::array<cv::cuda::GpuMat, 4> weights;

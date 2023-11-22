@@ -151,32 +151,44 @@ int main(int argc, char *argv[]) {
     };
     auto files = utils::findFilesByExtension(inputPaths, extensions, recursive);
 
-    trt::LogCallback callback = [&console](trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line) {
-        const auto s = "[" + function + "@" + std::to_string(line) + "] " + message;
+    // region Console callbacks
+    trt::MessageCallback messageCallback = [&console](trt::Severity severity, const std::string& message) {
         switch (severity) {
             case trt::Severity::critical:
-                console->critical(s);
+                console->critical(message);
                 break;
             case trt::Severity::error:
-                console->error(s);
+                console->error(message);
                 break;
             case trt::Severity::warn:
-                console->warn(s);
+                console->warn(message);
                 break;
             case trt::Severity::info:
-                console->info(s);
+                console->info(message);
                 break;
             case trt::Severity::debug:
-                console->debug(s);
+                console->debug(message);
                 break;
             case trt::Severity::trace:
-                console->trace(s);
+                console->trace(message);
                 break;
         }
     };
 
+    size_t fileIndex = 0;
+    size_t fileCount = files.size();
+    size_t frameIndex = 0;
+    size_t frameCount = 0;
+    trt::ProgressCallback progressCallback =
+        [&console, &fileIndex, &fileCount, &frameIndex, &frameCount] (int current, int total, double speed) {
+        console->info("Rendered file {}/{}, frame {}/{}, batch {}/{} @ {:.2f} it/s",
+            fileIndex, fileCount, frameIndex, frameCount, current, total, speed);
+    };
+    // endregion
+
     trt::Img2Img engine;
-    engine.setLogCallback(callback);
+    engine.setMessageCallback(messageCallback);
+    engine.setProgressCallback(progressCallback);
 
     const auto modelPath = "models/" + model + "/"
         + (noise == -1 ? "" : "noise" + std::to_string(noise) + "_")
@@ -213,14 +225,13 @@ int main(int argc, char *argv[]) {
             inputFrame.create(capture.getFrameSize(), CV_8UC3);
             outputFrame.create(capture.getFrameSize() * scale, CV_8UC3);
 
-            const auto frameCount = capture.getFrameCount();
+            frameIndex = 0;
+            frameCount = capture.getFrameCount();
 
-            writer.setFrameSize(outputFrame.size());
-
-            if (!outputDirectory.empty())
+            if (!outputDirectory.empty()) {
                 file = outputDirectory / file.filename();
+            }
             file.replace_filename(file.stem().string() + suffix);
-
             if (frameCount == 1) {
                 file.replace_extension(".png");
                 writer.setFrameRate(1)
@@ -232,6 +243,7 @@ int main(int argc, char *argv[]) {
                     .setPixelFormat(pixelFormat)
                     .setCodec(codec);
             }
+            writer.setFrameSize(outputFrame.size());
             writer.setOutputFile(file.string());
             writer.open();
 
@@ -239,9 +251,12 @@ int main(int argc, char *argv[]) {
                 capture.read(inputFrame);
                 engine.render(inputFrame, outputFrame);
                 writer.write(outputFrame);
+                frameIndex++;
             }
             capture.release();
             writer.release();
+
+            fileIndex++;
         }
     } else if (build->parsed()) {
         trt::BuildConfig config {

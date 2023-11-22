@@ -335,8 +335,7 @@ bool trt::Img2Img::render(const cv::Mat& src, cv::Mat& dst) try {
         // Log progress
         const auto t1 = std::chrono::steady_clock::now();
         const auto elapsed = utils::getElapsedMilliseconds(t0, t1);
-        logger.LOG(info, "Rendered batch " + std::to_string(stepIndex / batchSize + 1) + "/" + std::to_string(batchCount)
-            + " @ " + std::to_string(1000.0 / elapsed) + " it/s.");
+        logger.log(stepIndex / batchSize + 1, batchCount, 1000.0 / elapsed);
     }
 
     // Postprocess output
