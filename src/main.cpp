@@ -17,7 +17,10 @@ int main(int argc, char *argv[]) {
     // region Argument Parser
     CLI::App app("waifu2x-tensorrt");
     app.fallthrough()
-        ->require_subcommand(1);
+        ->require_subcommand(1)
+        ->get_formatter()->column_width(64);
+    app.set_help_flag("", "");
+    app.set_help_all_flag("-h, --help", "Print this help message and exit");
 
     std::string model;
     const auto modelChoices = {
