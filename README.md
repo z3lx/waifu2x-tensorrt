@@ -5,7 +5,14 @@ waifu2x-tensorrt is a TensorRT implementation of the waifu2x super-resolution mo
 
 ## Installation
 ### Precompiled Version
-A precompiled version of the program can be found in the [Releases](https://github.com/z3lx/waifu2x-tensorrt/releases) section.
+1. Download the precompiled binary:
+   - Visit the [Releases](https://github.com/z3lx/waifu2x-tensorrt/releases) section of this repository
+   - Download the precompiled binary for your operating system (only win64 currently)
+2. Download Models:
+   - In the same [Releases](https://github.com/z3lx/waifu2x-tensorrt/releases) section, download the models archive.
+3. Extract Files:
+   - Extract the precompiled binary archive to a location of your choice.
+   - Extract the models archive within the same folder as the precompiled binary.
 
 ### Building from source
 1. Install the dependencies:
