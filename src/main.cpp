@@ -216,7 +216,8 @@ int main(int argc, char *argv[]) {
             .tta = tta
         };
 
-        engine.load(modelPath, config);
+        if (!engine.load(modelPath, config))
+            return -1;
         VideoCapture capture;
         VideoWriter writer;
         cv::Mat inputFrame;
@@ -252,7 +253,8 @@ int main(int argc, char *argv[]) {
 
             for (auto i = 0; i < frameCount; i++) {
                 capture.read(inputFrame);
-                engine.render(inputFrame, outputFrame);
+                if (!engine.render(inputFrame, outputFrame))
+                    return -1;
                 writer.write(outputFrame);
                 frameIndex++;
             }
@@ -278,6 +280,7 @@ int main(int argc, char *argv[]) {
             .optHeight = tileSize,
             .maxHeight = tileSize,
         };
-        engine.build(modelPath, config);
+        if (!engine.build(modelPath, config))
+            return -1;
     }
 }
