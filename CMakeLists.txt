@@ -33,6 +33,18 @@ if (NOT json_POPULATED)
 endif()
 add_subdirectory(${json_SOURCE_DIR})
 
+# argparse
+FetchContent_Declare(
+    argparse
+    GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+    #GIT_TAG v2.9
+)
+FetchContent_GetProperties(argparse)
+if (NOT argparse_POPULATED)
+    FetchContent_Populate(argparse)
+endif()
+add_subdirectory(${argparse_SOURCE_DIR})
+
 add_executable(waifu2x_tensorrt
     src/main.cpp
     src/tensorrt/config.h
@@ -61,6 +73,7 @@ target_include_directories(waifu2x_tensorrt PUBLIC
     ${TensorRT_INCLUDE_DIRS}
     ${spdlog_SOURCE_DIR}/include
     ${json_SOURCE_DIR}/include
+    ${argparse_SOURCE_DIR}/include
 )
 
 target_link_libraries(waifu2x_tensorrt PUBLIC
