@@ -28,7 +28,7 @@ void VideoWriter::open() {
         " -i -" +
         (codec.empty() ? "" : " -vcodec " + codec) +
         (pixelFormat.empty() ? "" : " -pix_fmt " + pixelFormat) +
-        (constantRateFactor < 0 ? "" : " -crf " + std::to_string(constantRateFactor)) +
+        (crf < 0 ? "" : " -crf " + std::to_string(crf)) +
         (quality < 0 ? "" : " -q:v " + std::to_string(quality)) +
         " \"" + outputFile + "\"";
 
@@ -92,7 +92,7 @@ const std::string& VideoWriter::getCodec() const noexcept {
 }
 
 int VideoWriter::getConstantRateFactor() const noexcept {
-    return constantRateFactor;
+    return crf;
 }
 
 int VideoWriter::getQuality() const noexcept {
@@ -152,7 +152,7 @@ VideoWriter& VideoWriter::setConstantRateFactor(int value) {
         throw std::runtime_error(errorWriterOpened);
     if (value > 51)
         throw std::invalid_argument("constant rate factor must be between 0 and 51");
-    constantRateFactor = value;
+    crf = value;
     return *this;
 }
 

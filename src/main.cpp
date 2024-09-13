@@ -107,6 +107,22 @@ int main(int argc, char *argv[]) {
         ->description("Enable test-time augmentation")
         ->default_val(tta);
 
+    std::string codec = "libx264";
+    render->add_option("--codec", codec)
+        ->description("Set the codec (video only)")
+        ->default_val(codec);
+
+    std::string pixelFormat = "yuv420p";
+    render->add_option("--pix_fmt", pixelFormat)
+        ->description("Set the pixel format (video only)")
+        ->default_val(pixelFormat);
+
+    int crf = 23;
+    render->add_option("--crf", crf)
+        ->description("Set the constant rate factor (video only)")
+        ->default_val(crf)
+        ->check(CLI::Range(0, 51));
+
     auto build = app.add_subcommand("build", "Build model");
 
     try {
@@ -127,7 +143,7 @@ int main(int argc, char *argv[]) {
 
     const std::vector<std::string> extensions = {
         ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
-        ".mp4", ".avi", ".mkv"
+        ".mp4", ".avi", ".mkv", ".avi"
     };
     auto files = utils::findFilesByExtension(inputPaths, extensions, true);
 
@@ -162,8 +178,9 @@ int main(int argc, char *argv[]) {
         + (noise == -1 ? "" : "noise" + std::to_string(noise) + "_")
         + (scale == 1 ? "" : "scale" + std::to_string(scale) + "x")
         + ".onnx";
-    const auto suffix = "(" + model.replace(model.begin(), model.end(), '/', '_') + ")"
-        = (noise == -1 ? "" : "(noise" + std::to_string(noise) + ")")
+    std::replace(model.begin(), model.end(), '/', '_');
+    const auto suffix = "(" + model + ")"
+        + (noise == -1 ? "" : "(noise" + std::to_string(noise) + ")")
         + (scale == 1 ? "" : "(scale" + std::to_string(scale) + ")")
         + (tta ? "(tta)" : "");
 
@@ -186,6 +203,7 @@ int main(int argc, char *argv[]) {
         cv::Mat inputFrame;
         cv::Mat outputFrame;
 
+        writer.setConstantRateFactor(crf);
         for (auto& file : files) {
             capture.open(file.string());
             inputFrame.create(capture.getFrameSize(), CV_8UC3);
@@ -197,18 +215,20 @@ int main(int argc, char *argv[]) {
 
             if (!outputDirectory.empty())
                 file = outputDirectory / file.filename();
-            file.replace_filename(file.stem().string() + suffix + file.extension().string());
-            writer.setOutputFile(file.string());
+            file.replace_filename(file.stem().string() + suffix);
 
             if (frameCount == 1) {
+                file.replace_extension(".png");
                 writer.setFrameRate(1)
                     .setPixelFormat("")
                     .setCodec("");
             } else {
+                file.replace_extension(".mp4");
                 writer.setFrameRate(capture.getFrameRate())
-                    .setPixelFormat("yuv420p")
-                    .setCodec("libx264");
+                    .setPixelFormat(pixelFormat)
+                    .setCodec(codec);
             }
+            writer.setOutputFile(file.string());
             writer.open();
 
             for (auto i = 0; i < frameCount; i++) {
