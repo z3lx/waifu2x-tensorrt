@@ -48,6 +48,8 @@ add_executable(waifu2x_tensorrt
     src/utilities/sha256.h
     src/utilities/time.h
     src/utilities/path.h
+    src/videoio/capture.cpp
+    src/videoio/capture.h
 )
 
 target_include_directories(waifu2x_tensorrt PUBLIC
