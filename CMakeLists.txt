@@ -33,17 +33,18 @@ if (NOT json_POPULATED)
 endif()
 add_subdirectory(${json_SOURCE_DIR})
 
-# argparse
+# CLI11
+include(FetchContent)
 FetchContent_Declare(
-    argparse
-    GIT_REPOSITORY https://github.com/p-ranav/argparse.git
-    #GIT_TAG v2.9
+    cli11
+    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+    GIT_TAG v2.3.2
 )
-FetchContent_GetProperties(argparse)
-if (NOT argparse_POPULATED)
-    FetchContent_Populate(argparse)
+FetchContent_GetProperties(cli11)
+if(NOT cli11_POPULATED)
+    FetchContent_Populate(cli11)
 endif()
-add_subdirectory(${argparse_SOURCE_DIR})
+add_subdirectory(${cli11_SOURCE_DIR})
 
 add_executable(waifu2x_tensorrt
     src/main.cpp
@@ -73,7 +74,7 @@ target_include_directories(waifu2x_tensorrt PUBLIC
     ${TensorRT_INCLUDE_DIRS}
     ${spdlog_SOURCE_DIR}/include
     ${json_SOURCE_DIR}/include
-    ${argparse_SOURCE_DIR}/include
+    ${cli11_SOURCE_DIR}/include
 )
 
 target_link_libraries(waifu2x_tensorrt PUBLIC
