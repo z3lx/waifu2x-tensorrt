@@ -35,7 +35,7 @@
 #include <cstring>
 
 namespace utils {
-    std::string sha256(const std::string& s) {
+    static std::string sha256(const std::string& s) {
         const auto* in = reinterpret_cast<const unsigned char*>(s.c_str());
         size_t len = s.length();
         unsigned char out[32];
