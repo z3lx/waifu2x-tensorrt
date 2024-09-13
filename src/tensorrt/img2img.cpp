@@ -197,19 +197,13 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
     }
 
     // Create stream
-    cudaStream_t stream;
-    try {
-        cudaAssert(cudaStreamCreate(&stream));
-    }
-    catch (const std::exception& e) {
-        throw std::runtime_error("could not create cuda stream (" + std::string(e.what()) + ")");
-    }
+    stream = cv::cuda::Stream(cudaStreamNonBlocking);
 
     // Deallocate existing buffers
     if (!buffers.empty()) {
         try {
             for (auto& buffer : buffers) {
-                cudaAssert(cudaFreeAsync(buffer.first, stream));
+                cudaAssert(cudaFreeAsync(buffer.first, static_cast<cudaStream_t>(stream.cudaPtr())));
             }
         } catch (const std::exception& e) {
             throw std::runtime_error("could not deallocate buffers (" + std::string(e.what()) + ")");
@@ -226,14 +220,14 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
 
         buffers.emplace_back(nullptr, tensorSize * sizeof(float));
         try {
-            cudaAssert(cudaMallocAsync(&buffers[i].first, buffers[i].second, stream));
+            cudaAssert(cudaMallocAsync(&buffers[i].first, buffers[i].second, static_cast<cudaStream_t>(stream.cudaPtr())));
         }
         catch (const std::exception& e) {
             // Clean up
             for (auto& buffer : buffers) {
-                cudaAssert(cudaFreeAsync(buffer.first, stream));
+                cudaAssert(cudaFreeAsync(buffer.first, static_cast<cudaStream_t>(stream.cudaPtr())));
             }
-            cudaAssert(cudaStreamDestroy(stream));
+            //cudaAssert(cudaStreamDestroy(static_cast<cudaStream_t>(stream.cudaPtr())));
 
             throw std::runtime_error("could not allocate IO tensor buffers (" + std::string(e.what()) + ")");
         }
@@ -245,9 +239,6 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
         PLOG(plog::debug) << "Allocated " << (static_cast<double>(buffers[i].second) / pow(1024, 2))
             << " MiB on GPU for tensor \"" << tensorName << "\".";
     }
-
-    cudaAssert(cudaStreamSynchronize(stream));
-    cudaAssert(cudaStreamDestroy(stream));
 
     // TODO: ADD WARNING FOR ROUNDING ERRORS
     renderConfig = config;
@@ -282,7 +273,7 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
         static_cast<int>(std::lround(scaledOutputTileSize.height * renderConfig.overlap.y))
     };
 
-    weights = generateTileWeights(scaledOutputOverlap, outputTileSize);
+    weights = generateTileWeights(scaledOutputOverlap, outputTileSize, stream);
 
     return true;
 }
@@ -332,7 +323,7 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
         inputTiles.reserve(renderConfig.nbBatches);
         for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
             if (i + j < tileCount) {
-                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j]));
+                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j], stream));
             } else {
                 inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
             }
@@ -349,30 +340,31 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
 
                 // Blend left
                 if (outputTileRects[i].x != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j]);
+                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend top
                 if (outputTileRects[i].y != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j]);
+                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend right
                 if (outputTileRects[i].x + outputTileRects[i].width < output.cols) {
-                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j]);
+                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j], 1, -1, stream);
                 }
 
                 // Blend bottom
                 if (outputTileRects[i].y + outputTileRects[i].height < output.rows) {
-                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j]);
+                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j], 1, -1, stream);
                 }
 
                 cv::Rect2i roi(0, 0, outputTileRects[i].width, outputTileRects[i].height);
-                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i]), output(outputTileRects[i]));
+                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i]), output(outputTileRects[i]), cv::noArray(), -1, stream);
             }
         }
     }
-    output.convertTo(output, CV_8UC3, 255.f);
+    output.convertTo(output, CV_8UC3, 255.0, stream);
+    stream.waitForCompletion();
 
     return true;
 }
@@ -381,7 +373,6 @@ catch (const std::exception& e) {
     return false;
 }
 
-// TODO: VALIDATE THAT BATCHES WORK
 bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
     // Check batch size
     if (inputs.size() != renderConfig.nbBatches) {
@@ -407,38 +398,29 @@ bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vecto
         }
     }
 
-    // Create stream
-    cudaStream_t stream;
-    try {
-        cudaAssert(cudaStreamCreate(&stream));
-    }
-    catch (const std::exception& e) {
-        throw std::runtime_error("could not create cuda stream (" + std::string(e.what()) + ")");
-    }
-
     try {
         // Preprocess input
-        auto blob = blobFromImages(inputs);
+        auto blob = blobFromImages(inputs, stream);
 
         // Copy blob to input tensor buffer
         cudaAssert(cudaMemcpyAsync(buffers[0].first, blob.ptr<void>(),
-            buffers[0].second, cudaMemcpyDeviceToDevice, stream));
+            buffers[0].second, cudaMemcpyDeviceToDevice, static_cast<cudaStream_t>(stream.cudaPtr())));
 
         // Enqueue inference
-        if (!context->enqueueV3(stream)) {
+        if (!context->enqueueV3(static_cast<cudaStream_t>(stream.cudaPtr()))) {
             throw std::runtime_error("could not enqueue inference");
         }
 
         // Postprocess output
-        outputs = imagesFromBlob(buffers[1].first, context->getTensorShape(engine->getIOTensorName(1)));
+        outputs = imagesFromBlob(buffers[1].first, context->getTensorShape(engine->getIOTensorName(1)), stream);
     }
     catch (const std::exception& e) {
-        cudaAssert(cudaStreamDestroy(stream));
+        //cudaAssert(cudaStreamDestroy(static_cast<cudaStream_t>(stream.cudaPtr())));
         throw e;
     }
 
-    cudaAssert(cudaStreamSynchronize(stream));
-    cudaAssert(cudaStreamDestroy(stream));
+    //cudaAssert(cudaStreamSynchronize(static_cast<cudaStream_t>(stream.cudaPtr())));
+    //cudaAssert(cudaStreamDestroy(static_cast<cudaStream_t>(stream.cudaPtr())));
     return true;
 }
 catch (const std::exception& e) {
@@ -446,7 +428,7 @@ catch (const std::exception& e) {
     return false;
 }
 
-cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat>& images) {
+cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat>& images, cv::cuda::Stream& stream) {
     cv::cuda::GpuMat blob(static_cast<int>(images.size()), images[0].channels() * images[0].rows * images[0].cols, CV_8U);
 
     size_t width = images[0].cols * images[0].rows;
@@ -456,14 +438,14 @@ cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat
             cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(blob.ptr()[1 * width + 3 * width * i])),
             cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(blob.ptr()[2 * width + 3 * width * i]))
         };
-        cv::cuda::split(images[i], channels);
+        cv::cuda::split(images[i], channels, stream);
     }
 
-    blob.convertTo(blob, CV_32FC3, 1.0 / 255.0);
+    blob.convertTo(blob, CV_32FC3, 1.0 / 255.0, stream);
     return blob;
 }
 
-std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape) {
+std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape, cv::cuda::Stream& stream) {
     std::vector<cv::cuda::GpuMat> images(shape.d[0]);
 
     size_t width = shape.d[2] * shape.d[3] * sizeof(float);
@@ -471,13 +453,80 @@ std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(void* blobPtr, nvinfe
         images[i].create(shape.d[2], shape.d[3], CV_32FC3);
 
         std::vector<cv::cuda::GpuMat> channels {
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 0 * width + 3 * width * i),
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 1 * width + 3 * width * i),
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 2 * width + 3 * width * i)
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 0 * width + shape.d[1] * width * i),
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 1 * width + shape.d[1] * width * i),
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 2 * width + shape.d[1] * width * i)
         };
-        cv::cuda::merge(channels, images[i]);
+        cv::cuda::merge(channels, images[i], stream);
     }
     return images;
+}
+
+cv::cuda::GpuMat trt::Img2Img::padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi, cv::cuda::Stream& stream) {
+    int tl_x = roi.x;
+    int tl_y = roi.y;
+    int br_x = roi.x + roi.width;
+    int br_y = roi.y + roi.height;
+    int width = roi.width;
+    int height = roi.height;
+
+    if (tl_x < 0 || tl_y < 0 || br_x > input.cols || br_y > input.rows) {
+        int left = 0, right = 0, top = 0, bottom = 0;
+
+        if (tl_x < 0) {
+            width += tl_x;
+            left = -tl_x;
+            tl_x = 0;
+        }
+        if (tl_y < 0) {
+            height += tl_y;
+            top = -tl_y;
+            tl_y = 0;
+        }
+        if (br_x > input.cols) {
+            width -= br_x - input.cols;
+            right = br_x - input.cols;
+        }
+        if (br_y > input.rows) {
+            height -= br_y - input.rows;
+            bottom = br_y - input.rows;
+        }
+
+        cv::cuda::GpuMat output;
+        cv::cuda::copyMakeBorder(input(cv::Rect2i(tl_x, tl_y, width, height)),
+            output, top, bottom, left, right, cv::BORDER_REPLICATE, cv::Scalar(), stream);
+        return output;
+    } else {
+        return input(cv::Rect2i(tl_x, tl_y, width, height));
+    }
+}
+
+std::vector<cv::cuda::GpuMat> trt::Img2Img::generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream) {
+    std::vector<cv::cuda::GpuMat> weights(4);
+    weights[0] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+    weights[3] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+
+    // Top
+    const int height = overlap.y + 1;
+    for (int i = 1; i < height; ++i) {
+        double alpha = static_cast<double>(i) / height;
+        weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
+    }
+
+    // Left
+    const int width = overlap.x + 1;
+    for (int i = 1; i < width; ++i) {
+        double alpha = static_cast<double>(i) / width;
+        weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
+    }
+
+    // Bottom
+    cv::cuda::flip(weights[0], weights[2], 0, stream);
+
+    // Right
+    cv::cuda::flip(weights[3], weights[1], 1, stream);
+
+    return weights;
 }
 
 bool trt::Img2Img::serializeConfig(std::string& path, const BuildConfig& config) {
@@ -579,71 +628,4 @@ void trt::Img2Img::getDeviceNames(std::vector<std::string>& deviceNames) {
         cudaGetDeviceProperties(&deviceProp, i);
         deviceNames.emplace_back(deviceProp.name);
     }
-}
-
-cv::cuda::GpuMat trt::Img2Img::padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi) {
-    int tl_x = roi.x;
-    int tl_y = roi.y;
-    int br_x = roi.x + roi.width;
-    int br_y = roi.y + roi.height;
-    int width = roi.width;
-    int height = roi.height;
-
-    if (tl_x < 0 || tl_y < 0 || br_x > input.cols || br_y > input.rows) {
-        int left = 0, right = 0, top = 0, bottom = 0;
-
-        if (tl_x < 0) {
-            width += tl_x;
-            left = -tl_x;
-            tl_x = 0;
-        }
-        if (tl_y < 0) {
-            height += tl_y;
-            top = -tl_y;
-            tl_y = 0;
-        }
-        if (br_x > input.cols) {
-            width -= br_x - input.cols;
-            right = br_x - input.cols;
-        }
-        if (br_y > input.rows) {
-            height -= br_y - input.rows;
-            bottom = br_y - input.rows;
-        }
-
-        cv::cuda::GpuMat output;
-        cv::cuda::copyMakeBorder(input(cv::Rect2i(tl_x, tl_y, width, height)),
-            output, top, bottom, left, right, cv::BORDER_REPLICATE);
-        return output;
-    } else {
-        return input(cv::Rect2i(tl_x, tl_y, width, height));
-    }
-}
-
-std::vector<cv::cuda::GpuMat> trt::Img2Img::generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size) {
-    std::vector<cv::cuda::GpuMat> weights(4);
-    weights[0] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
-    weights[3] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
-
-    // Top
-    const int height = overlap.y + 1;
-    for (int i = 1; i < height; ++i) {
-        double alpha = static_cast<double>(i) / height;
-        weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
-    }
-
-    // Left
-    const int width = overlap.x + 1;
-    for (int i = 1; i < width; ++i) {
-        double alpha = static_cast<double>(i) / width;
-        weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
-    }
-
-    // Bottom
-    cv::cuda::flip(weights[0], weights[2], 0);
-
-    // Right
-    cv::cuda::flip(weights[3], weights[1], 1);
-
-    return weights;
 }
