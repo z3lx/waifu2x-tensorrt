@@ -14,19 +14,27 @@
 #include "logger.h"
 
 namespace trt {
-    class Engine {
+    class SuperResEngine {
     public:
-        Engine(Config config);
-        virtual ~Engine();
-        bool load(const std::string& modelPath);
+        SuperResEngine(BuilderConfig config);
+        virtual ~SuperResEngine();
+        bool load(const std::string& modelPath, InferrerConfig config);
         bool build(const std::string& onnxModelPath);
 
     private:
         Logger gLogger;
-        Config config;
+        BuilderConfig config;
+
+        std::vector<float> input;
+        std::vector<float> output;
+        std::vector<std::pair<void*, int>> buffers;
+
+        std::unique_ptr<nvinfer1::IRuntime> runtime;
+        std::unique_ptr<nvinfer1::ICudaEngine> engine;
+        std::unique_ptr<nvinfer1::IExecutionContext> context;
 
         bool serializeConfig(std::string& onnxModelPath) const;
-        static bool deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig);
+        static bool deserializeConfig(const std::string& trtEnginePath, BuilderConfig &trtEngineConfig);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
     };
 }

@@ -1,20 +1,123 @@
 #include "engine.h"
 
-trt::Engine::Engine(trt::Config config)
+trt::SuperResEngine::SuperResEngine(trt::BuilderConfig config)
     : config(config)
 {
 }
 
-trt::Engine::~Engine() {
+trt::SuperResEngine::~SuperResEngine() {
 
 }
 
-bool trt::Engine::load(const std::string& modelPath) {
+// TODO: Check if configs are compatible
+// TODO: error handling
+bool trt::SuperResEngine::load(const std::string& modelPath, trt::InferrerConfig config) {
+    cudaSetDevice(config.deviceId);
+
+    // Read engine to buffer
+    PLOG(plog::info) << "Reading engine...";
+    std::ifstream file(modelPath, std::ios::binary | std::ios::ate);
+    std::streamsize fileSize = file.tellg();
+    file.seekg(0, std::ios::beg);
+
+    std::vector<char> buffer(fileSize);
+    if (!file.read(buffer.data(), fileSize)) {
+        PLOG(plog::error) << "Failed to read engine.";
+        return false;
+    }
+
+    // Create runtime
+    PLOG(plog::info) << "Creating runtime...";
+    runtime.reset();
+    runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    if (!runtime) {
+        PLOG(plog::error) << "Failed to create runtime.";
+        return false;
+    }
+
+    // Deserialize engine
+    PLOG(plog::info) << "Deserializing engine...";
+    engine.reset();
+    engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(buffer.data(), buffer.size()));
+    if (!engine) {
+        PLOG(plog::error) << "Failed to deserialize engine.";
+        return false;
+    }
+
+    // Validate engine file
+    if (engine->getNbIOTensors() != 2) {
+        PLOG(plog::error) << "Invalid number of IO tensors.";
+        PLOG(plog::error) << "Expected 2, got " << engine->getNbIOTensors() << ".";
+        return false;
+    }
+
+    int nbDims = engine->getTensorShape(engine->getIOTensorName(0)).nbDims;
+    if (nbDims != 4) {
+        PLOG(plog::error) << "Invalid input tensor shape.";
+        PLOG(plog::error) << "Expected 4, got " << nbDims << ".";
+        return false;
+    }
+
+    nbDims = engine->getTensorShape(engine->getIOTensorName(1)).nbDims;
+    if (nbDims != 4) {
+        PLOG(plog::error) << "Invalid output tensor shape.";
+        PLOG(plog::error) << "Expected 4, got " << nbDims << ".";
+        return false;
+    }
+
+    // Create execution context
+    PLOG(plog::info) << "Creating execution context...";
+    context.reset();
+    context = std::unique_ptr<nvinfer1::IExecutionContext>(engine->createExecutionContext());
+    if (!context) {
+        PLOG(plog::error) << "Failed to create execution context.";
+        return false;
+    }
+
+    // Set input shape
+    if (!context->setInputShape(engine->getIOTensorName(0), config.inputShape)) {
+        PLOG(plog::error) << "Failed to set shape for input tensor \"" << engine->getIOTensorName(0) << "\".";
+        return false;
+    }
+
+    // Create stream
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    // Allocate buffers
+    buffers.resize(2);
+
+    // Allocate IO tensors
+    PLOG(plog::info) << "Allocating memory for IO tensors...";
+    {
+        auto tensorShape = context->getTensorShape(engine->getIOTensorName(0));
+        auto tensorSize = tensorShape.d[0] * tensorShape.d[1] * tensorShape.d[2] * tensorShape.d[3];
+        buffers[0].first = nullptr;
+        buffers[0].second = tensorSize * sizeof(float);
+        cudaMallocAsync(&buffers[0].first, buffers[0].second, stream);
+        input.clear();
+        input.resize(tensorSize);
+
+        tensorShape = context->getTensorShape(engine->getIOTensorName(1));
+        tensorSize = tensorShape.d[0] * tensorShape.d[1] * tensorShape.d[2] * tensorShape.d[3];
+        buffers[1].first = nullptr;
+        buffers[1].second = tensorSize * sizeof(float);
+        cudaMallocAsync(&buffers[1].first, buffers[1].second, stream);
+        output.clear();
+        output.resize(tensorSize);
+    }
+
+    // Destroy stream
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+
     return true;
 }
 
-bool trt::Engine::build(const std::string& onnxModelPath) {
-    PLOG(plog::info) << "Engine build started with configuration"
+// TODO: error handling and stream deallocation
+// Set cuda device when building the engine
+bool trt::SuperResEngine::build(const std::string& onnxModelPath) {
+    PLOG(plog::info) << "SuperResEngine build started with configuration"
         << ": device = " << config.deviceIndex
         << ", precision = " << (config.precision == Precision::FP16 ? "FP16" : "TF32")
         << ", minBatchSize = " << config.minBatchSize
@@ -55,7 +158,7 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
 
     // Parse ONNX model
     PLOG(plog::info) << "Parsing ONNX model...";
-    auto parsed = parser->parseFromFile(onnxModelPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
+    auto parsed = parser->parseFromFile(onnxModelPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kVERBOSE));
     if (!parsed) {
         PLOG(plog::error) << "Failed to parse ONNX model.";
         return false;
@@ -135,7 +238,7 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
     return true;
 }
 
-bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig) {
+bool trt::SuperResEngine::deserializeConfig(const std::string& trtEnginePath, BuilderConfig &trtEngineConfig) {
     std::string trtModelName = trtEnginePath.substr(trtEnginePath.find_last_of('/') + 1);
     std::istringstream iss(trtModelName);
     std::string token;
@@ -182,7 +285,7 @@ bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &tr
     return true;
 }
 
-bool trt::Engine::serializeConfig(std::string& onnxModelPath) const {
+bool trt::SuperResEngine::serializeConfig(std::string& onnxModelPath) const {
     const auto filenameIndex = onnxModelPath.find_last_of('/') + 1;
     onnxModelPath = onnxModelPath.substr(filenameIndex, onnxModelPath.find_last_of('.') - filenameIndex);
 
@@ -224,7 +327,7 @@ bool trt::Engine::serializeConfig(std::string& onnxModelPath) const {
     return true;
 }
 
-void trt::Engine::getDeviceNames(std::vector<std::string> &deviceNames) {
+void trt::SuperResEngine::getDeviceNames(std::vector<std::string> &deviceNames) {
     int32_t deviceCount;
     cudaGetDeviceCount(&deviceCount);
     deviceNames.clear();
