@@ -342,17 +342,13 @@ bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vecto
         }
 
         // Copy output to host
-        std::vector<cv::cuda::GpuMat> temp(renderConfig.nbBatches);
-        for (int i = 0; i < temp.size(); ++i) {
-            auto shape = context->getTensorShape(engine->getIOTensorName(1));
-            temp[i].create(shape.d[2], shape.d[3], CV_32FC3);
-            cudaAssert(cudaMemcpyAsync(temp[i].ptr<void>(), buffers[1].first,
-                buffers[1].second, cudaMemcpyDeviceToDevice, stream));
-        }
+        cv::cuda::GpuMat out(1, buffers[1].second, CV_8U);
+        cudaAssert(cudaMemcpyAsync(out.ptr<void>(), buffers[1].first,
+            buffers[1].second, cudaMemcpyDeviceToDevice, stream));
 
         // Postprocess output
         outputs.clear();
-        outputs = imagesFromBlob(temp[0], context->getTensorShape(engine->getIOTensorName(1)), true);
+        outputs = imagesFromBlob(out, context->getTensorShape(engine->getIOTensorName(1)), true);
     }
     catch (const std::exception& e) {
         cudaAssert(cudaStreamDestroy(stream));
@@ -404,38 +400,50 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
         }
     }
 
-    std::vector<cv::cuda::GpuMat> tiles;
-    for (size_t i = 0; i < tileCount; ++i) {
-        std::vector<cv::cuda::GpuMat> inputTile {
-            padRoi(input, inputTileRects[i])
-        };
-        std::vector<cv::cuda::GpuMat> outputTile;
-        infer(inputTile, outputTile);
-
-        if (renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0) {
-            // Blend left
-            if (outputTileRects[i].x != 0) {
-                cv::cuda::multiply(outputTile[0], weights[3], outputTile[0]);
-            }
-
-            // Blend top
-            if (outputTileRects[i].y != 0) {
-                cv::cuda::multiply(outputTile[0], weights[0], outputTile[0]);
-            }
-
-            // Blend right
-            if (outputTileRects[i].x + outputTileRects[i].width < output.cols) {
-                cv::cuda::multiply(outputTile[0], weights[1], outputTile[0]);
-            }
-
-            // Blend bottom
-            if (outputTileRects[i].y + outputTileRects[i].height < output.rows) {
-                cv::cuda::multiply(outputTile[0], weights[2], outputTile[0]);
+    for (size_t i = 0; i < tileCount; i += renderConfig.nbBatches) {
+        std::vector<cv::cuda::GpuMat> inputTiles;
+        inputTiles.reserve(renderConfig.nbBatches);
+        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
+            if (i + j < tileCount) {
+                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j]));
+            } else {
+                inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
             }
         }
+        std::vector<cv::cuda::GpuMat> outputTiles;
+        outputTiles.reserve(renderConfig.nbBatches);
+        infer(inputTiles, outputTiles);
 
-        cv::Rect2i roi(0, 0, outputTileRects[i].width, outputTileRects[i].height);
-        cv::cuda::add(outputTile[0](roi), output(outputTileRects[i]), output(outputTileRects[i]));
+        if (!(renderConfig.overlap.x == 0 && renderConfig.overlap.y == 0)) {
+            for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
+                if (i + j >= tileCount) {
+                    continue;
+                }
+
+                // Blend left
+                if (outputTileRects[i + j].x != 0) {
+                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j]);
+                }
+
+                // Blend top
+                if (outputTileRects[i + j].y != 0) {
+                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j]);
+                }
+
+                // Blend right
+                if (outputTileRects[i + j].x + outputTileRects[i + j].width < output.cols) {
+                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j]);
+                }
+
+                // Blend bottom
+                if (outputTileRects[i + j].y + outputTileRects[i + j].height < output.rows) {
+                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j]);
+                }
+
+                cv::Rect2i roi(0, 0, outputTileRects[i + j].width, outputTileRects[i + j].height);
+                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i + j]), output(outputTileRects[i + j]));
+            }
+        }
     }
     output.convertTo(output, CV_8UC3, 255.f);
 
