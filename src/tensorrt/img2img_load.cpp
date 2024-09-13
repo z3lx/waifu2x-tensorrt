@@ -1,9 +1,117 @@
 #include "img2img.h"
 #include "utilities/path.h"
+#include <nlohmann/json.hpp>
 #include <opencv2/core/cuda_stream_accessor.hpp>
 #include <opencv2/cudaarithm.hpp>
 #include <filesystem>
 #include <fstream>
+
+bool isCompatible(const trt::RenderConfig& renderConfig, const trt::BuildConfig& buildConfig) {
+    return renderConfig.deviceId == buildConfig.deviceId &&
+        renderConfig.precision == buildConfig.precision &&
+        renderConfig.batchSize >= buildConfig.minBatchSize &&
+        renderConfig.batchSize <= buildConfig.maxBatchSize &&
+        renderConfig.channels >= buildConfig.minChannels &&
+        renderConfig.channels <= buildConfig.maxChannels &&
+        renderConfig.width >= buildConfig.minWidth &&
+        renderConfig.width <= buildConfig.maxWidth &&
+        renderConfig.height >= buildConfig.minHeight &&
+        renderConfig.height <= buildConfig.maxHeight;
+}
+
+bool isOptimized(const trt::RenderConfig& renderConfig, const trt::BuildConfig& buildConfig) {
+    return renderConfig.batchSize == buildConfig.optBatchSize &&
+        renderConfig.channels == buildConfig.optChannels &&
+        renderConfig.width == buildConfig.optWidth &&
+        renderConfig.height == buildConfig.optHeight;
+}
+
+void createTileWeights(std::array<cv::cuda::GpuMat, 4>& weights, const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream) {
+    weights[0] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+    weights[3] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+
+    // Top
+    const int height = overlap.y + 1;
+    for (int i = 1; i < height; ++i) {
+        double alpha = static_cast<double>(i) / height;
+        weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
+    }
+
+    // Left
+    const int width = overlap.x + 1;
+    for (int i = 1; i < width; ++i) {
+        double alpha = static_cast<double>(i) / width;
+        weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
+    }
+
+    // Bottom
+    cv::cuda::flip(weights[0], weights[2], 0, stream);
+
+    // Right
+    cv::cuda::flip(weights[3], weights[1], 1, stream);
+}
+
+void deserializeConfig(const std::string& path, trt::BuildConfig& config) {
+    std::ifstream inputFile(path);
+    if (!inputFile.is_open())
+        throw std::runtime_error("could not open config \"" + path + "\"");
+    nlohmann::json j;
+    inputFile >> j;
+
+    const auto deviceName = j.at("deviceName").get<std::string>();
+    config.deviceId = trt::cudaGetDeviceId(deviceName);
+    const auto precision = j.at("precision").get<std::string>();
+    config.precision = precision == "FP16" ? trt::Precision::FP16 : trt::Precision::TF32;
+    j.at("minBatchSize").get_to(config.minBatchSize);
+    j.at("optBatchSize").get_to(config.optBatchSize);
+    j.at("maxBatchSize").get_to(config.maxBatchSize);
+    j.at("minChannels").get_to(config.minChannels);
+    j.at("optChannels").get_to(config.optChannels);
+    j.at("maxChannels").get_to(config.maxChannels);
+    j.at("minWidth").get_to(config.minWidth);
+    j.at("optWidth").get_to(config.optWidth);
+    j.at("maxWidth").get_to(config.maxWidth);
+    j.at("minHeight").get_to(config.minHeight);
+    j.at("optHeight").get_to(config.optHeight);
+    j.at("maxHeight").get_to(config.maxHeight);
+}
+
+std::string getEnginePath(const std::string& modelPath, const trt::RenderConfig& config) {
+    namespace fs = std::filesystem;
+    if (!fs::exists(modelPath))
+        throw std::runtime_error("model file does not exist");
+
+    std::string engineName = fs::path(modelPath).stem().string();
+    std::string enginePath;
+    for (const auto& entry : fs::directory_iterator(fs::path(modelPath).parent_path())) {
+        if (!entry.is_regular_file())
+            continue;
+
+        const auto& path = entry.path();
+        if (path.filename().string().rfind(engineName, 0) != 0 ||
+            path.extension().string() != ".trt")
+            continue;
+
+        std::string configPath = utils::removeFileExtension(path.string()) + ".json";
+        if (!fs::exists(configPath))
+            continue;
+
+        trt::BuildConfig buildConfig;
+        deserializeConfig(configPath, buildConfig);
+        if (isCompatible(config, buildConfig)) {
+            if (isOptimized(config, buildConfig)) {
+                enginePath = path.string();
+                break;
+            } else if (enginePath.empty()) {
+                enginePath = path.string();
+            }
+        }
+    }
+
+    if (enginePath.empty())
+        throw std::runtime_error("could not satisfy render configuration");
+    return enginePath;
+}
 
 // TODO: SET OPTIMIZATION PROFILE VIA nvinfer1::IExecutionContext::setOptimizationProfileAsync
 bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config) try {
@@ -87,11 +195,12 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
     }
 
     // Set tensor shapes
-    nvinfer1::Dims4 inputShape{config.batchSize, config.channels, config.height, config.width};
-    if (!context->setInputShape(engine->getIOTensorName(0), inputShape)) {
+    inputTensorShape = nvinfer1::Dims4(config.batchSize, config.channels, config.height, config.width);
+    if (!context->setInputShape(engine->getIOTensorName(0), inputTensorShape)) {
         logger.LOG(error, "Failed to set input tensor shape.");
         return false;
     }
+    outputTensorShape = context->getTensorShape(engine->getIOTensorName(1));
 
     // Create stream
     stream = cv::cuda::Stream(cudaStreamNonBlocking);
@@ -138,40 +247,26 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
         }
     }
 
-    // TODO: ADD WARNING FOR ROUNDING ERRORS
     renderConfig = config;
 
-    inputTileSize = {
-        context->getTensorShape(engine->getIOTensorName(0)).d[3],
-        context->getTensorShape(engine->getIOTensorName(0)).d[2]
-    };
+    const auto inputTileSize = cv::Size2i(
+        inputTensorShape.d[3],
+        inputTensorShape.d[2]
+    );
 
-    outputTileSize = {
-        context->getTensorShape(engine->getIOTensorName(1)).d[3],
-        context->getTensorShape(engine->getIOTensorName(1)).d[2]
-    };
+    const auto outputTileSize = cv::Size2i(
+        outputTensorShape.d[3],
+        outputTensorShape.d[2]
+    );
 
-    scaledOutputTileSize = {
-        inputTileSize.width * renderConfig.scaling.x,
-        inputTileSize.width * renderConfig.scaling.y
-    };
+    const auto scaledOutputOverlap = cv::Point2i(
+        static_cast<int>(std::lround(inputTileSize.width * renderConfig.scaling * renderConfig.overlap.x)),
+        static_cast<int>(std::lround(inputTileSize.height * renderConfig.scaling * renderConfig.overlap.y))
+    );
 
-    scaledInputTileSize = {
-        static_cast<int>(std::lround(static_cast<double>(outputTileSize.width) / scaledOutputTileSize.width * inputTileSize.width)),
-        static_cast<int>(std::lround(static_cast<double>(outputTileSize.height) / scaledOutputTileSize.height * inputTileSize.height))
-    };
-
-    inputOverlap = {
-        static_cast<int>(std::lround(inputTileSize.width * renderConfig.overlap.x)),
-        static_cast<int>(std::lround(inputTileSize.height * renderConfig.overlap.y))
-    };
-
-    scaledOutputOverlap = {
-        static_cast<int>(std::lround(scaledOutputTileSize.width * renderConfig.overlap.x)),
-        static_cast<int>(std::lround(scaledOutputTileSize.height * renderConfig.overlap.y))
-    };
-
-    createTileWeights(weights, scaledOutputOverlap, outputTileSize, stream);
+    if (renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0) {
+        createTileWeights(weights, scaledOutputOverlap, outputTileSize, stream);
+    }
 
     if (renderConfig.tta) {
         ttaInputTiles.resize(renderConfig.batchSize);
@@ -194,86 +289,3 @@ catch (const std::exception& e) {
     logger.LOG(error, "Engine load failed unexpectedly: " + std::string(e.what()) + ".");
     return false;
 }
-
-std::string trt::Img2Img::getEnginePath(const std::string& modelPath, const trt::RenderConfig& config) {
-    namespace fs = std::filesystem;
-    if (!fs::exists(modelPath))
-        throw std::runtime_error("model file does not exist");
-
-    std::string engineName = fs::path(modelPath).stem().string();
-    std::string enginePath;
-    for (const auto& entry : fs::directory_iterator(fs::path(modelPath).parent_path())) {
-        if (!entry.is_regular_file())
-            continue;
-
-        const auto& path = entry.path();
-        if (path.filename().string().rfind(engineName, 0) != 0 ||
-            path.extension().string() != ".trt")
-            continue;
-
-        std::string configPath = utils::removeFileExtension(path.string()) + ".json";
-        if (!fs::exists(configPath))
-            continue;
-
-        BuildConfig buildConfig;
-        deserializeConfig(configPath, buildConfig);
-        if (isCompatible(config, buildConfig)) {
-            if (isOptimized(config, buildConfig)) {
-                enginePath = path.string();
-                break;
-            } else if (enginePath.empty()) {
-                enginePath = path.string();
-            }
-        }
-    }
-
-    if (enginePath.empty())
-        throw std::runtime_error("could not satisfy render configuration");
-    return enginePath;
-}
-
-bool trt::Img2Img::isCompatible(const trt::RenderConfig& renderConfig, const trt::BuildConfig& buildConfig) {
-    return renderConfig.deviceId == buildConfig.deviceId &&
-        renderConfig.precision == buildConfig.precision &&
-        renderConfig.batchSize >= buildConfig.minBatchSize &&
-        renderConfig.batchSize <= buildConfig.maxBatchSize &&
-        renderConfig.channels >= buildConfig.minChannels &&
-        renderConfig.channels <= buildConfig.maxChannels &&
-        renderConfig.width >= buildConfig.minWidth &&
-        renderConfig.width <= buildConfig.maxWidth &&
-        renderConfig.height >= buildConfig.minHeight &&
-        renderConfig.height <= buildConfig.maxHeight;
-}
-
-bool trt::Img2Img::isOptimized(const trt::RenderConfig& renderConfig, const trt::BuildConfig& buildConfig) {
-    return renderConfig.batchSize == buildConfig.optBatchSize &&
-        renderConfig.channels == buildConfig.optChannels &&
-        renderConfig.width == buildConfig.optWidth &&
-        renderConfig.height == buildConfig.optHeight;
-}
-
-void trt::Img2Img::createTileWeights(std::array<cv::cuda::GpuMat, 4>& weights, const cv::Point2i& overlap, const cv::Size2i& size, cv::cuda::Stream& stream) {
-    weights[0] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
-    weights[3] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
-
-    // Top
-    const int height = overlap.y + 1;
-    for (int i = 1; i < height; ++i) {
-        double alpha = static_cast<double>(i) / height;
-        weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
-    }
-
-    // Left
-    const int width = overlap.x + 1;
-    for (int i = 1; i < width; ++i) {
-        double alpha = static_cast<double>(i) / width;
-        weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha), stream);
-    }
-
-    // Bottom
-    cv::cuda::flip(weights[0], weights[2], 0, stream);
-
-    // Right
-    cv::cuda::flip(weights[3], weights[1], 1, stream);
-}
-

@@ -38,7 +38,7 @@ namespace trt {
         int channels = 3;
         int height = 256;
         int width = 256;
-        cv::Point2i scaling = cv::Point2i(4, 4);
+        int scaling = 4;
         cv::Point2d overlap = cv::Point2d(0.125f, 0.125f);
     };
 }
