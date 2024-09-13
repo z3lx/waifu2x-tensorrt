@@ -8,23 +8,24 @@ find_package(TensorRT REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(OpenCV REQUIRED)
 
-# Download plog
+# Download spdlog
 include(FetchContent)
 FetchContent_Declare(
-        plog
-        GIT_REPOSITORY https://github.com/SergiusTheBest/plog.git
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
 )
-FetchContent_GetProperties(plog)
-if(NOT plog_POPULATED)
-    FetchContent_Populate(plog)
+FetchContent_GetProperties(spdlog)
+if(NOT spdlog_POPULATED)
+    FetchContent_Populate(spdlog)
 endif()
-add_subdirectory(${plog_SOURCE_DIR})
+add_subdirectory(${spdlog_SOURCE_DIR})
 
 add_executable(waifu2x_tensorrt
         src/main.cpp
         src/tensorrt/img2img.cpp
         src/tensorrt/img2img.h
         src/tensorrt/config.h
+        src/tensorrt/logger.cpp
         src/tensorrt/logger.h
         src/utilities/time.h
         src/tensorrt/helper.h
@@ -35,7 +36,7 @@ target_include_directories(waifu2x_tensorrt PUBLIC
         ${OpenCV_INCLUDE_DIRS}
         ${CUDA_INCLUDE_DIRS}
         ${TensorRT_INCLUDE_DIRS}
-        ${plog_SOURCE_DIR}/include
+        ${spdlog_SOURCE_DIR}/include
 )
 
 target_link_libraries(waifu2x_tensorrt PUBLIC
