@@ -38,10 +38,10 @@ int main() {
 
     std::string imageDir = R"(C:\waifu2x-tensorrt\images\)";
     std::string imagePath = imageDir + "bg.png";
-    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise1_scale4x.NVIDIAGeForceRTX3060Ti.FP16.1.1.1.256.256.256.256.256.256.trt)";
+    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise3_scale4x.NVIDIAGeForceRTX3060Ti.FP16.2.2.2.256.256.256.256.256.256.trt)";
     int deviceId = 0;
     trt::Precision precision = trt::Precision::FP16;
-    int batchSize = 1;
+    int batchSize = 2;
     int tileSize = 256;
     cv::Point2i scaling(4, 4);
     cv::Point2d overlap(0.125, 0.125);
@@ -57,6 +57,7 @@ int main() {
     renderConfig.width = tileSize;
     renderConfig.scaling = scaling;
     renderConfig.overlap = overlap;
+    renderConfig.tta = true;
 
     trt::Img2Img engine;
     engine.setLogCallback(callback);
@@ -79,7 +80,6 @@ int main() {
     console->info("Total time: {}", tm.getTimeMilli());
     console->info("Average time: {}", tm.getTimeMilli() / iterations);
 
-    cv::cuda::cvtColor(gpuOutput, gpuOutput, cv::COLOR_RGB2BGR);
     gpuOutput.download(output);
     cv::imwrite(imageDir + "out.png", output);
 

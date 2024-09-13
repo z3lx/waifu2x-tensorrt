@@ -1,7 +1,5 @@
 #include "logger.h"
 
-#include <utility>
-
 trt::Logger::Logger() = default;
 trt::Logger::~Logger() = default;
 
