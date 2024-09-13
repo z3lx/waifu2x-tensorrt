@@ -5,11 +5,11 @@ int main() {
     int maxBatchSize;
     int maxSize;
 
-    std::cout << "Enter ONNX model path: ";
+    std::cout << "Enter ONNX model path:";
     std::cin >> onnxModelPath;
-    std::cout << "Enter max batch size: ";
+    std::cout << "Enter max batch size:";
     std::cin >> maxBatchSize;
-    std::cout << "Enter max size: ";
+    std::cout << "Enter max size:";
     std::cin >> maxSize;
 
     trt::Config config;
