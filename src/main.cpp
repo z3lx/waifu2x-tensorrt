@@ -98,22 +98,17 @@ int main() {
 
     cv::Mat input = cv::imread(imagePath);
     cv::Mat output;
-    cv::cuda::GpuMat gpuInput;
-    cv::cuda::GpuMat gpuOutput;
-    gpuInput.upload(input);
-    cv::cuda::cvtColor(gpuInput, gpuInput, cv::COLOR_BGR2RGB);
 
-    engine.render(gpuInput, gpuOutput);
+    engine.render(input, output);
     cv::TickMeter tm;
     for (int i = 0; i < iterations; ++i) {
         tm.start();
-        engine.render(gpuInput, gpuOutput);
+        engine.render(input, output);
         tm.stop();
     }
     console->info("Total time: {}", tm.getTimeMilli());
     console->info("Average time: {}", tm.getTimeMilli() / iterations);
 
-    gpuOutput.download(output);
     cv::imwrite(imageDir + "out.png", output);
 #endif
     return 0;
