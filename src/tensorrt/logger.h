@@ -1,10 +1,11 @@
 #ifndef WAIFU2X_TENSORRT_TRT_LOGGER_H
 #define WAIFU2X_TENSORRT_TRT_LOGGER_H
 
+#include <NvInferRuntimeBase.h>
 #include <functional>
 #include <string>
 
-#include <NvInferRuntimeBase.h>
+#define LOG(severity, message) log(severity, message, __FILE__, __FUNCTION__, __LINE__)
 
 namespace trt {
     enum Severity {
@@ -25,7 +26,7 @@ namespace trt {
 
         void setLogCallback(LogCallback callback);
         void log(trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line);
-        void log(Severity severity, const char* msg) noexcept override;
+        void log(ILogger::Severity severity, const char* msg) noexcept override;
 
     private:
         LogCallback logCallback{};

@@ -4,8 +4,7 @@
 #include "tensorrt/img2img.h"
 
 #define SPDLOG_LEVEL_NAMES { "TRACE", "DEBUG", "INFO ", "WARN ", "ERROR", "FATAL", "OFF" }
-#define SPDLOG_NO_NAME
-#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 int main() {
     auto console = spdlog::stdout_color_mt("console");
@@ -38,20 +37,20 @@ int main() {
 
     std::string imageDir = R"(C:\waifu2x-tensorrt\images\)";
     std::string imagePath = imageDir + "bg.png";
-    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise3_scale4x.NVIDIAGeForceRTX3060Ti.FP16.2.2.2.256.256.256.256.256.256.trt)";
+    std::string modelPath = R"(C:\waifu2x-tensorrt\models\swin_unet\art\noise3_scale4x.onnx)";
     int deviceId = 0;
     trt::Precision precision = trt::Precision::FP16;
     int batchSize = 2;
-    int tileSize = 256;
+    int tileSize = 640;
     cv::Point2i scaling(4, 4);
-    cv::Point2d overlap(0.125, 0.125);
+    cv::Point2d overlap(1.0 / 16.0, 1.0 / 16.0);
 
     int iterations = 1;
 
     trt::RenderConfig renderConfig;
     renderConfig.deviceId = deviceId;
     renderConfig.precision = precision;
-    renderConfig.nbBatches = batchSize;
+    renderConfig.batchSize = batchSize;
     renderConfig.channels = 3;
     renderConfig.height = tileSize;
     renderConfig.width = tileSize;

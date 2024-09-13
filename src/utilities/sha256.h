@@ -33,6 +33,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
 
 namespace utils {
     static std::string sha256(const std::string& s) {

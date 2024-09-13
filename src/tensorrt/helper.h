@@ -1,11 +1,12 @@
 #ifndef WAIFU2X_TENSORRT_TRT_CUDAHELPER_H
 #define WAIFU2X_TENSORRT_TRT_CUDAHELPER_H
 
+#include <NvInfer.h>
+#include <opencv2/core/cuda_stream_accessor.hpp>
 #include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <NvInfer.h>
 
 namespace trt {
     [[maybe_unused]]
@@ -13,6 +14,12 @@ namespace trt {
         if (error != cudaSuccess) {
             throw std::runtime_error(cudaGetErrorString(error));
         }
+    }
+
+    [[maybe_unused]]
+    [[nodiscard]]
+    static inline cudaStream_t cudaGetCudaStream(const cv::cuda::Stream& stream) {
+        return cv::cuda::StreamAccessor::getStream(stream);
     }
 
     [[maybe_unused]]
