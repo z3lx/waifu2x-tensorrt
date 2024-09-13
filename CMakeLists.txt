@@ -27,7 +27,6 @@ add_executable(waifu2x_tensorrt
         src/tensorrt/config.h
         src/tensorrt/logger.cpp
         src/tensorrt/logger.h
-        src/plog/plog.h
 )
 
 target_include_directories(waifu2x_tensorrt PUBLIC
