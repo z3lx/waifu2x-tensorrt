@@ -5,7 +5,7 @@
 
 namespace trt {
     enum class Precision {
-        FP32,
+        TF32,
         FP16
     };
 

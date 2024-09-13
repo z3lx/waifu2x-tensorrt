@@ -4,6 +4,8 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <plog/Log.h>
+#include <plog/Severity.h>
 #include <string>
 #include <NvOnnxParser.h>
 #include <NvInfer.h>
@@ -18,12 +20,13 @@ namespace trt {
         virtual ~Engine();
         bool load(const std::string& modelPath);
         bool build(const std::string& onnxModelPath);
-        static bool deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig);
+
     private:
         Logger gLogger;
         Config config;
 
-        bool serializeConfig(std::string& onnxModelPath);
+        bool serializeConfig(std::string& onnxModelPath) const;
+        static bool deserializeConfig(const std::string& trtEnginePath, Config &trtEngineConfig);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
     };
 }

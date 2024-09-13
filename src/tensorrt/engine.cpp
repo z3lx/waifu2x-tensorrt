@@ -14,45 +14,63 @@ bool trt::Engine::load(const std::string& modelPath) {
 }
 
 bool trt::Engine::build(const std::string& onnxModelPath) {
+    PLOG(plog::info) << "Engine build started with configuration"
+        << ": device = " << config.deviceIndex
+        << ", precision = " << (config.precision == Precision::FP16 ? "FP16" : "TF32")
+        << ", minBatchSize = " << config.minBatchSize
+        << ", optBatchSize = " << config.optBatchSize
+        << ", maxBatchSize = " << config.maxBatchSize
+        << ", minWidth = " << config.minWidth
+        << ", optWidth = " << config.optWidth
+        << ", maxWidth = " << config.maxWidth
+        << ", minHeight = " << config.minHeight
+        << ", optHeight = " << config.optHeight
+        << ", maxHeight = " << config.maxHeight
+        << ".";
+
     // Create builder
-    gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Building engine...");
+    PLOG(plog::info) << "Creating builder...";
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(gLogger));
     if (!builder) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to create builder.");
+        PLOG(plog::error) << "Failed to create builder.";
         return false;
     }
 
     // Create network
+    PLOG(plog::info) << "Creating network...";
     auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
     auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
     if (!network) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to create network.");
+        PLOG(plog::error) << "Failed to create network.";
         return false;
     }
 
     // Create parser
+    PLOG(plog::info) << "Creating parser...";
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, gLogger));
     if (!parser) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to create parser.");
+        PLOG(plog::error) << "Failed to create parser.";
         return false;
     }
 
     // Parse ONNX model
-    gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Parsing ONNX model...");
+    PLOG(plog::info) << "Parsing ONNX model...";
     auto parsed = parser->parseFromFile(onnxModelPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kWARNING));
     if (!parsed) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to parse ONNX model.");
+        PLOG(plog::error) << "Failed to parse ONNX model.";
         return false;
     }
 
-    // Create builder builderConfig
+    // Create builder config
+    PLOG(plog::info) << "Creating builder config...";
     auto builderConfig = std::unique_ptr<nvinfer1::IBuilderConfig>(builder->createBuilderConfig());
     if (!builderConfig) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to create builder builderConfig.");
+        PLOG(plog::error) << "Failed to create builder config.";
         return false;
     }
 
     //Create optimization profile
+    PLOG(plog::info) << "Creating optimization profile...";
     auto nbInputs = network->getNbInputs();
     auto profile = builder->createOptimizationProfile();
     for (int32_t i = 0; i < nbInputs; ++i) {
@@ -71,18 +89,19 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
     builderConfig->addOptimizationProfile(profile);
 
     // Set precision
+    PLOG(plog::info) << "Setting precision...";
     if (config.precision == Precision::FP16) {
         if (!builder->platformHasFastFp16()) {
-            gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Platform does not support FP16.");
+            PLOG(plog::error) << "Platform does not support FP16.";
             return false;
         }
         builderConfig->setFlag(nvinfer1::BuilderFlag::kFP16);
-    } else if (config.precision == Precision::FP32) {
+    } else if (config.precision == Precision::TF32) {
         if (!builder->platformHasTf32()) {
-            gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Platform does not support FP32.");
+            PLOG(plog::error) << "Platform does not support TF32.";
             return false;
         }
-        builderConfig->setFlag(nvinfer1::BuilderFlag::kFP16);
+        builderConfig->setFlag(nvinfer1::BuilderFlag::kTF32);
     }
 
     // Create stream
@@ -91,20 +110,20 @@ bool trt::Engine::build(const std::string& onnxModelPath) {
     builderConfig->setProfileStream(stream);
 
     // Build engine
-    gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Building engine...");
+    PLOG(plog::info) << "Building engine...";
     std::unique_ptr<nvinfer1::IHostMemory> engine {
         builder->buildSerializedNetwork(*network, *builderConfig)
     };
     if (!engine) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to build engine.");
+        PLOG(plog::error) << "Failed to build engine.";
         return false;
     }
 
     // Save engine
-    gLogger.log(nvinfer1::ILogger::Severity::kINFO, "Saving engine...");
+    PLOG(plog::info) << "Saving engine...";
     std::string modelPath = onnxModelPath;
     if (!serializeConfig(modelPath)) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Failed to serialize config to path.");
+        PLOG(plog::error) << "Failed to serialize config to path.";
         return false;
     }
     std::ofstream engineFile(modelPath, std::ios::binary);
@@ -127,7 +146,7 @@ bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &tr
     }
 
     if (tokens.size() != 13) {
-        std::cout << "Invalid engine." << std::endl;
+        PLOG(plog::error) << "Invalid engine.";
         return false;
     }
 
@@ -144,12 +163,12 @@ bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &tr
     }
 
     if (deviceIndex == -1) {
-        std::cout << "Invalid device." << std::endl;
+        PLOG(plog::error) << "Invalid device.";
         return false;
     }
 
     trtEngineConfig.deviceIndex = deviceIndex;
-    trtEngineConfig.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::FP32;
+    trtEngineConfig.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::TF32;
     trtEngineConfig.minBatchSize = std::stoi(tokens[3]);
     trtEngineConfig.optBatchSize = std::stoi(tokens[4]);
     trtEngineConfig.maxBatchSize = std::stoi(tokens[5]);
@@ -163,7 +182,7 @@ bool trt::Engine::deserializeConfig(const std::string& trtEnginePath, Config &tr
     return true;
 }
 
-bool trt::Engine::serializeConfig(std::string& onnxModelPath) {
+bool trt::Engine::serializeConfig(std::string& onnxModelPath) const {
     const auto filenameIndex = onnxModelPath.find_last_of('/') + 1;
     onnxModelPath = onnxModelPath.substr(filenameIndex, onnxModelPath.find_last_of('.') - filenameIndex);
 
@@ -171,7 +190,7 @@ bool trt::Engine::serializeConfig(std::string& onnxModelPath) {
     std::vector<std::string> deviceNames;
     getDeviceNames(deviceNames);
     if (config.deviceIndex >= deviceNames.size()) {
-        gLogger.log(nvinfer1::ILogger::Severity::kERROR, "Invalid device index.");
+        PLOG(plog::error) << "Invalid device index.";
         return false;
     }
     auto deviceName = deviceNames[config.deviceIndex];
@@ -183,8 +202,8 @@ bool trt::Engine::serializeConfig(std::string& onnxModelPath) {
     case Precision::FP16:
         onnxModelPath += ".FP16";
         break;
-    case Precision::FP32:
-        onnxModelPath += ".FP32";
+    case Precision::TF32:
+        onnxModelPath += ".TF32";
         break;
     }
 
