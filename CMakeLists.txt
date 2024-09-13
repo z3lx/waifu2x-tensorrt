@@ -29,6 +29,7 @@ add_executable(waifu2x_tensorrt
         src/tensorrt/logger.h
         src/utilities/time.h
         src/tensorrt/helper.h
+        src/utilities/sha256.h
 )
 
 target_include_directories(waifu2x_tensorrt PUBLIC
