@@ -61,14 +61,6 @@ void VideoWriter::release() noexcept {
         pclose(pipe);
     pipe = nullptr;
     opened = false;
-
-    frameRate = -1;
-    frameSize = cv::Size2i(-1, -1);
-    outputFile = "";
-    pixelFormat = "";
-    codec = "";
-    constantRateFactor = -1;
-    quality = -1;
 }
 
 #undef popen
