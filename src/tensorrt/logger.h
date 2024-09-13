@@ -11,7 +11,25 @@ namespace trt {
     public:
         Logger() = default;
         virtual ~Logger() = default;
-        void log (Severity severity, const char* msg) noexcept override;
+        void log (Severity severity, const char* msg) noexcept override {
+            switch (severity) {
+                case Severity::kINTERNAL_ERROR:
+                    PLOG(plog::fatal) << msg;
+                    break;
+                case Severity::kERROR:
+                    PLOG(plog::error) << msg;
+                    break;
+                case Severity::kWARNING:
+                    PLOG(plog::warning) << msg;
+                    break;
+                case Severity::kINFO:
+                    PLOG(plog::info) << msg;
+                    break;
+                case Severity::kVERBOSE:
+                    PLOG(plog::verbose) << msg;
+                    break;
+            }
+        }
     };
 }
 
