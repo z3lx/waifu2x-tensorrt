@@ -8,6 +8,14 @@ find_package(TensorRT REQUIRED)
 find_package(CUDA REQUIRED)
 find_package(OpenCV REQUIRED)
 
-add_executable(waifu2x_tensorrt src/main.cpp)
+add_executable(waifu2x_tensorrt
+        src/main.cpp
+        src/tensorrt/engine.cpp
+        src/tensorrt/engine.h
+        src/tensorrt/config.h
+        src/tensorrt/logger.cpp
+        src/tensorrt/logger.h
+)
+
 target_include_directories(waifu2x_tensorrt PUBLIC ${OpenCV_INCLUDE_DIRS} ${CUDA_INCLUDE_DIRS} ${TensorRT_INCLUDE_DIRS})
 target_link_libraries(waifu2x_tensorrt PUBLIC ${OpenCV_LIBS} ${CUDA_LIBRARIES} ${TensorRT_LIBRARIES})
