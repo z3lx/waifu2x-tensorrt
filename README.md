@@ -1,5 +1,5 @@
 # waifu2x-tensorrt
-waifu2x-tensorrt is a TensorRT implementation of the waifu2x super-resolution model. This project aims to improve the inference speed for faster image upscaling on NVIDIA GPUs.
+waifu2x-tensorrt is a TensorRT implementation of the waifu2x super-resolution model. This project aims to improve the inference speed for faster image upscaling on NVIDIA GPUs. Supports images and videos alike.
 
 **Note**: This project is currently under active development by a high school student (that's me!). As a result, some features may be missing, and bugs can be expected. Contributions and feedback are welcome though!
 
@@ -67,10 +67,10 @@ Before being able to upscale an image or a video using a particular configuratio
 ```
 waifu2x-tensorrt build --model swin_unet/art --scale 4 --noise 3 --batchSize 4 --tileSize 256
 ```
-Depending on the configuration, this process might take a while to complete, and TensorRT might fail if VRAM is insufficient. 
+Depending on the configuration, this process might take a couple of minutes to complete, and TensorRT might fail if VRAM is insufficient. 
 
-### Upscaling an image or a video
-To upscale an image or a video, use the render subcommand and specify the upscaling configuration and input files:
+### Upscaling an image/video
+To upscale an image and/or a video, use the render subcommand and specify the upscaling configuration and input files:
 ```
 waifu2x-tensorrt render --model swin_unet/art --scale 4 --noise 3 --batchSize 4 --tileSize 256 --input path/to/file1.png path/to/file2.mp4 path/to/files
 ```
@@ -81,11 +81,15 @@ Contributions are welcome! If you decide to tackle any of these tasks or have yo
 - Add alpha support
 - Add wide char support
 - Add more options for video
+- Further optimize render
 - Add GUI
+### Known bugs
+- Program might not work correctly on linux/mac
+- Upscaling does not tile correctly on some models when batchSize > 1
 
 ## Acknowledgments
-- [waifu2x](https://github.com/nagadomi/nunif/tree/master/waifu2x): The original waifu2x super-resolution model, which serves as the foundation for this project.
-- [tensorrt-cpp-api](https://github.com/cyrusbehr/tensorrt-cpp-api): A reference for TensorRT integration in C++. Some code snippets have been adapted from that repository.
+- [waifu2x](https://github.com/nagadomi/nunif/tree/master/waifu2x): The original waifu2x super-resolution model
+- [tensorrt-cpp-api](https://github.com/cyrusbehr/tensorrt-cpp-api): A reference for TensorRT integration in C++
 
 ## License
 This project is licensed under the [MIT License](https://github.com/z3lx/waifu2x-tensorrt/blob/main/LICENSE).
