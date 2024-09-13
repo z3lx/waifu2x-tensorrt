@@ -16,14 +16,13 @@
 namespace trt {
     class SuperResEngine {
     public:
-        SuperResEngine(BuilderConfig config);
+        SuperResEngine();
         virtual ~SuperResEngine();
         bool load(const std::string& modelPath, InferrerConfig config);
-        bool build(const std::string& onnxModelPath);
+        bool build(const std::string& onnxModelPath, const BuilderConfig& config);
 
     private:
         Logger gLogger;
-        BuilderConfig config;
 
         std::vector<float> input;
         std::vector<float> output;
@@ -33,8 +32,8 @@ namespace trt {
         std::unique_ptr<nvinfer1::ICudaEngine> engine;
         std::unique_ptr<nvinfer1::IExecutionContext> context;
 
-        bool serializeConfig(std::string& onnxModelPath) const;
-        static bool deserializeConfig(const std::string& trtEnginePath, BuilderConfig &trtEngineConfig);
+        static bool serializeConfig(std::string& path, const BuilderConfig &config);
+        static bool deserializeConfig(const std::string& path, BuilderConfig &config);
         static void getDeviceNames(std::vector<std::string>& deviceNames);
     };
 }
