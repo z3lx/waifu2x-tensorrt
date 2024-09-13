@@ -114,7 +114,7 @@ std::string getEnginePath(const std::string& modelPath, const trt::RenderConfig&
 }
 
 // TODO: SET OPTIMIZATION PROFILE VIA nvinfer1::IExecutionContext::setOptimizationProfileAsync
-bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config) try {
+bool trt::Img2Img::load(const std::string& modelPath, const trt::RenderConfig& config) try {
     // Find engine
     std::string enginePath;
     try {
