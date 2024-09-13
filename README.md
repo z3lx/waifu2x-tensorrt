@@ -1,5 +1,5 @@
 # waifu2x-tensorrt
-waifu2x-tensorrt is a TensorRT implementation of the original waifu2x super-resolution model, found [here](https://github.com/nagadomi/nunif/tree/master/waifu2x). This project aims to improve the inference speed of the upscaling process on NVIDIA GPUs.
+waifu2x-tensorrt is a TensorRT implementation of the waifu2x super-resolution model. This project aims to improve the inference speed for faster image upscaling on NVIDIA GPUs.
 
 **Note**: This project is currently under active development by a high school student (that's me!). As a result, some features may be missing, and bugs can be expected. Contributions and feedback are welcome though!
 
@@ -13,8 +13,9 @@ A precompiled version of the program can be found in the [Releases](https://gith
    - [OpenCV](https://opencv.org/releases/) with CUDA support (version >= 4.8.0)
    - [TensorRT](https://developer.nvidia.com/tensorrt)
    - [CUDA toolkit](https://developer.nvidia.com/cuda-downloads)
+   - [cuDNN](https://developer.nvidia.com/cudnn)
    
-   Refer to the [support matrix](https://docs.nvidia.com/deeplearning/tensorrt/support-matrix/index.html) for compatible CUDA and TensorRT versions.
+   Refer to the [support matrix](https://docs.nvidia.com/deeplearning/tensorrt/support-matrix/index.html) for compatible TensorRT, CUDA, and cuDNN versions.
 3. Clone the repository:
 ```
 git clone https://github.com/z3lx/waifu2x-tensorrt.git
@@ -82,5 +83,9 @@ Contributions are welcome! If you decide to tackle any of these tasks or have yo
 - Add more options for video
 - Add GUI
 
+## Acknowledgments
+- [waifu2x](https://github.com/nagadomi/nunif/tree/master/waifu2x): The original waifu2x super-resolution model, which serves as the foundation for this project.
+- [tensorrt-cpp-api](https://github.com/cyrusbehr/tensorrt-cpp-api): A reference for TensorRT integration in C++. Some code snippets have been adapted from that repository.
+
 ## License
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](https://github.com/z3lx/waifu2x-tensorrt/blob/main/LICENSE).
