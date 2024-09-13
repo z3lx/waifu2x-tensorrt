@@ -45,6 +45,7 @@ namespace trt {
     };
 
     struct RenderConfig {
+        bool tta = false;
         int deviceId = 0;
         Precision precision = Precision::FP16;
         int nbBatches = 1;

@@ -299,6 +299,16 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
 
     weights = generateTileWeights(scaledOutputOverlap, outputTileSize, stream);
 
+    if (renderConfig.tta) {
+        ttaInputTiles = std::vector<cv::cuda::GpuMat>(renderConfig.nbBatches);
+        for (auto& ttaInputTile : ttaInputTiles) {
+            ttaInputTile.create(inputTileSize, CV_32FC3);
+        }
+        ttaOutputTile.create(outputTileSize, CV_32FC3);
+        tmpInputMat.create(inputTileSize, CV_32FC3);
+        tmpOutputMat.create(outputTileSize, CV_32FC3);
+    }
+
     return true;
 }
 catch (const std::exception& e) {
@@ -325,6 +335,7 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
     std::vector<cv::Rect2i> outputTileRects;
     inputTileRects.reserve(tileCount);
     outputTileRects.reserve(tileCount);
+
     for (int i = 0; i < tiling.y; ++i) {
         for (int j = 0; j < tiling.x; ++j) {
             // offset_border + offset_scaled_tile - offset_overlap
@@ -345,67 +356,179 @@ bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try
         }
     }
 
+    const bool tta = renderConfig.tta;
+    const bool overlapping = renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0;
+
+    const int batchSize = renderConfig.nbBatches;
+    const int batchCount = std::lround(std::ceil(static_cast<double>(tileCount * (tta ? ttaSize : 1)) / batchSize));
+    const int stepCount = batchCount * batchSize;
+    const int stepsPerTile = tta ? ttaSize : 1;
+
     std::vector<cv::cuda::GpuMat> inputTiles;
     std::vector<cv::cuda::GpuMat> outputTiles;
-    inputTiles.reserve(renderConfig.nbBatches);
-    outputTiles.reserve(renderConfig.nbBatches);
-    for (size_t i = 0; i < tileCount; i += renderConfig.nbBatches) {
+    inputTiles.reserve(batchSize);
+    outputTiles.reserve(batchSize);
+
+    for (int stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
         t0 = std::chrono::steady_clock::now();
 
-        inputTiles.clear();
-        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
-            if (i + j < tileCount) {
-                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j], stream));
-            } else {
-                inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
+        int tileIndex = stepIndex / stepsPerTile;
+        int batchIndex = stepIndex % batchSize;
+        int augmentationIndex = stepIndex % stepsPerTile;
+        tileIndices.emplace(tileIndex, augmentationIndex);
+
+        if (tileIndex < tileCount) {
+            cv::cuda::GpuMat inputTile = padRoi(input, inputTileRects[tileIndex], stream);
+            cv::cuda::GpuMat& ttaInputTile = ttaInputTiles[batchIndex];
+
+            switch (augmentationIndex) {
+                case 0:
+                    inputTiles.emplace_back(inputTile);
+                    break;
+
+                case 1:
+                    cv::cuda::flip(inputTile, ttaInputTile, 0, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 2:
+                    cv::cuda::flip(inputTile, ttaInputTile, 1, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 3:
+                    cv::cuda::flip(inputTile, ttaInputTile, -1, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 4:
+                    cv::cuda::rotate(inputTile, ttaInputTile, inputTileSize, 90, 0, inputTileSize.height - 1, cv::INTER_NEAREST, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 5:
+                    cv::cuda::rotate(inputTile, ttaInputTile, inputTileSize, -90, inputTileSize.width - 1, 0, cv::INTER_NEAREST, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 6:
+                    cv::cuda::rotate(inputTile, tmpInputMat, inputTileSize, 90, 0, inputTileSize.height - 1, cv::INTER_NEAREST, stream);
+                    cv::cuda::flip(tmpInputMat, ttaInputTile, 0, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                case 7:
+                    cv::cuda::rotate(inputTile, tmpInputMat, inputTileSize, -90, inputTileSize.width - 1, 0, cv::INTER_NEAREST, stream);
+                    cv::cuda::flip(tmpInputMat, ttaInputTile, 0, stream);
+                    inputTiles.emplace_back(ttaInputTile);
+                    break;
+
+                default:
+                    LOG(error, "Invalid TTA augmentation index: " + std::to_string(augmentationIndex) + ".");
+                    return false;
             }
+        } else {
+            inputTiles.emplace_back(inputTileSize, CV_32FC3, cv::Scalar(0, 0, 0));
         }
 
-        if (!infer(inputTiles, outputTiles)) {
-            LOG(error, "Failed to infer tile " + std::to_string(i + 1)
-                + "/" + std::to_string(tileCount) + ".");
-            return false;
-        }
-
-        const bool overlapping = renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0;
-        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
-            size_t tileIndex = i + j;
-            if (tileIndex == tileCount) {
-                break;
-            }
-            cv::Rect2i& outputTileRect = outputTileRects[tileIndex];
-
-            if (overlapping) {
-                // Blend left
-                if (outputTileRect.x != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j], 1, -1, stream);
-                }
-
-                // Blend top
-                if (outputTileRect.y != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j], 1, -1, stream);
-                }
-
-                // Blend right
-                if (outputTileRect.x + outputTileRect.width < output.cols) {
-                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j], 1, -1, stream);
-                }
-
-                // Blend bottom
-                if (outputTileRect.y + outputTileRect.height < output.rows) {
-                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j], 1, -1, stream);
-                }
+        if (batchIndex == batchSize - 1) {
+            if (!infer(inputTiles, outputTiles)) {
+                LOG(error, "Failed to infer tile " + std::to_string(tileIndex + 1)
+                    + "/" + std::to_string(tileCount) + ".");
+                return false;
             }
 
-            cv::Rect2i roi(0, 0, outputTileRect.width, outputTileRect.height);
-            cv::cuda::add(outputTiles[j](roi), output(outputTileRect), output(outputTileRect), cv::noArray(), -1, stream);
+            for (int i = 0; i < batchSize; ++i) {
+                std::tie(tileIndex, augmentationIndex) = tileIndices.front();
+                tileIndices.pop();
+
+                if (tileIndex >= tileCount)
+                    continue;
+
+                cv::cuda::GpuMat* outputTile = &outputTiles[i];
+                cv::Rect2i& outputTileRect = outputTileRects[tileIndex];
+
+                if (tta) {
+                    switch (augmentationIndex) {
+                        case 0:
+                            ttaOutputTile.setTo(cv::Scalar(0, 0, 0), stream);
+                            cv::cuda::add(ttaOutputTile, *outputTile, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 1:
+                            cv::cuda::flip(*outputTile, tmpOutputMat, 0, stream);
+                            cv::cuda::add(ttaOutputTile, tmpOutputMat, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 2:
+                            cv::cuda::flip(*outputTile, tmpOutputMat, 1, stream);
+                            cv::cuda::add(ttaOutputTile, tmpOutputMat, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 3:
+                            cv::cuda::flip(*outputTile, tmpOutputMat, -1, stream);
+                            cv::cuda::add(ttaOutputTile, tmpOutputMat, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 4:
+                            cv::cuda::rotate(*outputTile, tmpOutputMat, outputTileSize, -90, outputTileSize.width - 1, 0, cv::INTER_NEAREST, stream);
+                            cv::cuda::add(ttaOutputTile, tmpOutputMat, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 5:
+                            cv::cuda::rotate(*outputTile, tmpOutputMat, outputTileSize, 90, 0, outputTileSize.height - 1, cv::INTER_NEAREST, stream);
+                            cv::cuda::add(ttaOutputTile, tmpOutputMat, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 6:
+                            cv::cuda::flip(*outputTile, tmpOutputMat, 0, stream);
+                            cv::cuda::rotate(tmpOutputMat, *outputTile, outputTileSize, -90, outputTileSize.width - 1, 0, cv::INTER_NEAREST, stream);
+                            cv::cuda::add(ttaOutputTile, *outputTile, ttaOutputTile, cv::noArray(), -1, stream);
+                            break;
+
+                        case 7:
+                            cv::cuda::flip(*outputTile, tmpOutputMat, 0, stream);
+                            cv::cuda::rotate(tmpOutputMat, *outputTile, outputTileSize, 90, 0, outputTileSize.height - 1, cv::INTER_NEAREST, stream);
+                            cv::cuda::add(ttaOutputTile, *outputTile, ttaOutputTile, cv::noArray(), -1, stream);
+                            cv::cuda::divide(ttaOutputTile, cv::Scalar(ttaSize, ttaSize, ttaSize), ttaOutputTile, 1, -1, stream);
+                            outputTile = &ttaOutputTile;
+                            break;
+
+                        default:
+                            LOG(error, "Invalid TTA augmentation index: " + std::to_string(augmentationIndex) + ".");
+                            return false;
+                    }
+                }
+
+                if (!tta || augmentationIndex == ttaSize - 1) {
+                    if (overlapping) {
+                        if (outputTileRect.x != 0)
+                            cv::cuda::multiply(*outputTile, weights[3], *outputTile, 1, -1, stream);
+
+                        if (outputTileRect.y != 0)
+                            cv::cuda::multiply(*outputTile, weights[0], *outputTile, 1, -1, stream);
+
+                        if (outputTileRect.x + outputTileRect.width < output.cols)
+                            cv::cuda::multiply(*outputTile, weights[1], *outputTile, 1, -1, stream);
+
+                        if (outputTileRect.y + outputTileRect.height < output.rows)
+                            cv::cuda::multiply(*outputTile, weights[2], *outputTile, 1, -1, stream);
+                    }
+
+                    cv::cuda::add((*outputTile)(cv::Rect2i(0, 0, outputTileRect.width, outputTileRect.height)),
+                        output(outputTileRect), output(outputTileRect), cv::noArray(), -1, stream);
+                }
+            }
 
             t1 = std::chrono::steady_clock::now();
             elapsed = utils::getElapsedMilliseconds(t0, t1);
-            LOG(info, "Rendered tile " + std::to_string(tileIndex + 1) + "/" + std::to_string(tileCount)
+            LOG(info, "Rendered batch " + std::to_string(stepIndex / batchSize + 1) + "/" + std::to_string(batchCount)
                 + " @ " + std::to_string(1000.0 / elapsed) + " it/s.");
+
+            inputTiles.clear();
         }
     }
+
     output.convertTo(output, CV_8UC3, 255.0, stream);
     stream.waitForCompletion();
 
