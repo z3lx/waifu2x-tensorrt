@@ -1,41 +1,39 @@
 #ifndef WAIFU2X_TENSORRT_UTILS_PATH_H
 #define WAIFU2X_TENSORRT_UTILS_PATH_H
 
+#include <filesystem>
+
 namespace utils {
-    [[nodiscard]]
-    [[maybe_unused]]
-    static inline std::string getFileDirectory(const std::string& path) {
-        size_t pos = path.find_last_of("/\\");
-        if (pos == std::string::npos)
-            return {};
-        return path.substr(0, pos);
-    }
+    static inline std::vector<std::filesystem::path> findFilesByExtension(
+        const std::vector<std::filesystem::path>& paths,
+        const std::vector<std::string>& extensions,
+        bool recursive = false) {
+        std::vector<std::filesystem::path> filePaths;
 
-    [[nodiscard]]
-    [[maybe_unused]]
-    static inline std::string getFileName(const std::string& path) {
-        size_t pos = path.find_last_of("/\\");
-        if (pos == std::string::npos)
-            return path;
-        return path.substr(pos + 1);
-    }
+        auto match = [&](const std::filesystem::path& path) {
+            if (!path.has_extension())
+                return;
 
-    [[nodiscard]]
-    [[maybe_unused]]
-    static inline std::string getFileExtension(const std::string& path) {
-        size_t pos = path.find_last_of('.');
-        if (pos == std::string::npos)
-            return {};
-        return path.substr(pos + 1);
-    }
+            if (std::find(extensions.begin(), extensions.end(), path.extension().string()) != extensions.end())
+                filePaths.emplace_back(path);
+        };
 
-    [[nodiscard]]
-    [[maybe_unused]]
-    static inline std::string removeFileExtension(const std::string& path) {
-        size_t pos = path.find_last_of('.');
-        if (pos == std::string::npos)
-            return path;
-        return path.substr(0, pos);
+        for (const auto& path : paths) {
+            if (std::filesystem::is_regular_file(path))
+                match(path);
+
+            else if (std::filesystem::is_directory(path)) {
+                if (recursive) {
+                    for (const auto& entry: std::filesystem::recursive_directory_iterator(path))
+                        match(entry.path());
+                } else {
+                    for (const auto& entry: std::filesystem::directory_iterator(path))
+                        match(entry.path());
+                }
+            }
+        }
+
+        return filePaths;
     }
 }
 

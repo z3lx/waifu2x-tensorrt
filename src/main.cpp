@@ -1,4 +1,5 @@
 #include "tensorrt/img2img.h"
+#include "utilities/path.h"
 #include "videoio/capture.h"
 #include "videoio/writer.h"
 #include <CLI/CLI.hpp>
@@ -67,7 +68,7 @@ int main(int argc, char *argv[]) {
     app.add_option("--device", deviceId)
         ->description("Set the GPU device ID")
         ->default_val(deviceId)
-        ->check(CLI::PositiveNumber);
+        ->check(CLI::NonNegativeNumber);
 
     trt::Precision precision = trt::Precision::FP16;
     const std::map<std::string, trt::Precision> precisionMap = {
@@ -81,24 +82,20 @@ int main(int argc, char *argv[]) {
 
     auto render = app.add_subcommand("render", "Render image(s)/video(s)");
 
-    std::vector<std::string> input;
-    render->add_option("-i, --input", input)
+    std::vector<std::filesystem::path> inputPaths;
+    render->add_option("-i, --input", inputPaths)
         ->description("Set the input image(s)/video(s)")
-        ->check(CLI::ExistingFile)
+        ->check(CLI::ExistingPath)
         ->required();
 
-    std::string output;
-    render->add_option("-o, --output", output)
+    std::filesystem::path outputDirectory;
+    render->add_option("-o, --output", outputDirectory)
         ->description("Set the output directory")
-        ->check(CLI::ExistingDirectory)
-        ->required();
+        ->check(CLI::ExistingDirectory);
 
     double blend = 1.0/16.0;
     const auto blendChoices = {
-        1.0/8.0,
-        1.0/16.0,
-        1.0/32.0,
-        0.0
+        1.0/8.0, 1.0/16.0, 1.0/32.0, 0.0
     };
     render->add_option("--blend", blend)
         ->description("Set the percentage of overlap between two tiles to blend")
@@ -113,20 +110,26 @@ int main(int argc, char *argv[]) {
     auto build = app.add_subcommand("build", "Build model");
 
     try {
-        (app).parse((argc), (argv));
+        app.parse((argc), (argv));
         if (model == "cunet/art" && scale == 4)
             throw std::runtime_error("cunet/art does not support scale factor 4.");
         if (noise == -1 && scale == 1)
             throw std::runtime_error("Noise level -1 does not support scale factor 1.");
     }
     catch (const CLI::ParseError& e) {
-        return (app).exit(e);
+        return app.exit(e);
     }
     catch (const std::exception& e) {
         std::cerr << e.what();
         exit(-1);
     };
     // endregion
+
+    const std::vector<std::string> extensions = {
+        ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff",
+        ".mp4", ".avi", ".mkv"
+    };
+    auto files = utils::findFilesByExtension(inputPaths, extensions, true);
 
     trt::LogCallback callback = [&console](trt::Severity severity, const std::string& message, const std::string& file, const std::string& function, int line) {
         const auto s = "[" + function + "@" + std::to_string(line) + "] " + message;
@@ -159,6 +162,10 @@ int main(int argc, char *argv[]) {
         + (noise == -1 ? "" : "noise" + std::to_string(noise) + "_")
         + (scale == 1 ? "" : "scale" + std::to_string(scale) + "x")
         + ".onnx";
+    const auto suffix = "(" + model.replace(model.begin(), model.end(), '/', '_') + ")"
+        = (noise == -1 ? "" : "(noise" + std::to_string(noise) + ")")
+        + (scale == 1 ? "" : "(scale" + std::to_string(scale) + ")")
+        + (tta ? "(tta)" : "");
 
     if (render->parsed()) {
         trt::RenderConfig config {
@@ -176,21 +183,29 @@ int main(int argc, char *argv[]) {
         engine.load(modelPath, config);
         VideoCapture capture;
         VideoWriter writer;
+        cv::Mat inputFrame;
+        cv::Mat outputFrame;
 
-        for (const auto& path : input) {
-            capture.open(path);
+        for (auto& file : files) {
+            capture.open(file.string());
+            inputFrame.create(capture.getFrameSize(), CV_8UC3);
+            outputFrame.create(capture.getFrameSize() * scale, CV_8UC3);
 
             const auto frameCount = capture.getFrameCount();
-            cv::Mat inputFrame(capture.getFrameSize(), CV_8UC3);
-            cv::Mat outputFrame(capture.getFrameSize() * scale, CV_8UC3);
 
             writer.setFrameSize(outputFrame.size());
 
+            if (!outputDirectory.empty())
+                file = outputDirectory / file.filename();
+            file.replace_filename(file.stem().string() + suffix + file.extension().string());
+            writer.setOutputFile(file.string());
+
             if (frameCount == 1) {
-                writer.setOutputFile(output + "\\out.png");
+                writer.setFrameRate(1)
+                    .setPixelFormat("")
+                    .setCodec("");
             } else {
-                writer.setOutputFile(output + "\\out.mp4")
-                    .setFrameRate(capture.getFrameRate())
+                writer.setFrameRate(capture.getFrameRate())
                     .setPixelFormat("yuv420p")
                     .setCodec("libx264");
             }
