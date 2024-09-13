@@ -13,7 +13,7 @@ trt::Img2Img::~Img2Img() {
 // TODO: ADD INPUT TENSOR SHAPE CONSTRAINTS
 // TODO: SUPPORT MULTIPLE OPTIMIZATION PROFILES
 // TODO: CHANGE MODEL CONFIGURATION SERIALIZATION
-bool trt::Img2Img::build(const std::string& onnxModelPath, const BuilderConfig& config) try {
+bool trt::Img2Img::build(const std::string& onnxModelPath, const BuildConfig& config) try {
     // Set cuda device
     try {
         trt::cudaAssert(cudaSetDevice(config.deviceId));
@@ -130,7 +130,7 @@ catch (const std::exception& e) {
 
 // TODO: ENSURE CONFIGURATION COMPATIBILITY
 // TODO: SET OPTIMIZATION PROFILE VIA nvinfer1::IExecutionContext::setOptimizationProfileAsync
-bool trt::Img2Img::load(const std::string& modelPath, trt::InferrerConfig& config) try {
+bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config) try {
     // Set cuda device
     try {
         trt::cudaAssert(cudaSetDevice(config.deviceId));
@@ -248,9 +248,44 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::InferrerConfig& confi
             << " MiB on GPU for tensor \"" << tensorName << "\".";
     }
 
-    inferrerConfig = config;
     cudaAssert(cudaStreamSynchronize(stream));
     cudaAssert(cudaStreamDestroy(stream));
+
+    // TODO: ADD WARNING FOR ROUNDING ERRORS
+    renderConfig = config;
+
+    inputTileSize = {
+        context->getTensorShape(engine->getIOTensorName(0)).d[3],
+        context->getTensorShape(engine->getIOTensorName(0)).d[2]
+    };
+
+    outputTileSize = {
+        context->getTensorShape(engine->getIOTensorName(1)).d[3],
+        context->getTensorShape(engine->getIOTensorName(1)).d[2]
+    };
+
+    scaledOutputTileSize = {
+        inputTileSize.width * renderConfig.scaling.x,
+        inputTileSize.width * renderConfig.scaling.y
+    };
+
+    scaledInputTileSize = {
+        static_cast<int>(std::lround(static_cast<double>(outputTileSize.width) / scaledOutputTileSize.width * inputTileSize.width)),
+        static_cast<int>(std::lround(static_cast<double>(outputTileSize.height) / scaledOutputTileSize.height * inputTileSize.height))
+    };
+
+    inputOverlap = {
+        static_cast<int>(std::lround(inputTileSize.width * renderConfig.overlap.x)),
+        static_cast<int>(std::lround(inputTileSize.height * renderConfig.overlap.y))
+    };
+
+    scaledOutputOverlap = {
+        static_cast<int>(std::lround(scaledOutputTileSize.width * renderConfig.overlap.x)),
+        static_cast<int>(std::lround(scaledOutputTileSize.height * renderConfig.overlap.y))
+    };
+
+    weights = generateTileWeights(scaledOutputOverlap, outputTileSize);
+
     return true;
 }
 catch (const std::exception& e) {
@@ -261,26 +296,26 @@ catch (const std::exception& e) {
 // TODO: VALIDATE THAT BATCHES WORK
 bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
     // Check batch size
-    if (inputs.size() != inferrerConfig.nbBatches) {
+    if (inputs.size() != renderConfig.nbBatches) {
         throw std::runtime_error("invalid input batch size (expected "
-            + std::to_string(inferrerConfig.nbBatches) + ", got " + std::to_string(inputs.size()) + ")");
+            + std::to_string(renderConfig.nbBatches) + ", got " + std::to_string(inputs.size()) + ")");
     }
 
     // Check image size
     for (const auto& mat: inputs) {
-        if (mat.channels() != inferrerConfig.channels) {
+        if (mat.channels() != renderConfig.channels) {
             throw std::runtime_error("invalid image channels (expected "
-                + std::to_string(inferrerConfig.channels) + ", got " + std::to_string(mat.channels()) + ")");
+                + std::to_string(renderConfig.channels) + ", got " + std::to_string(mat.channels()) + ")");
         }
 
-        if (mat.rows != inferrerConfig.height) {
+        if (mat.rows != renderConfig.height) {
             throw std::runtime_error("invalid image height (expected "
-                + std::to_string(inferrerConfig.height) + ", got " + std::to_string(mat.rows) + ")");
+                + std::to_string(renderConfig.height) + ", got " + std::to_string(mat.rows) + ")");
         }
 
-        if (mat.cols != inferrerConfig.width) {
+        if (mat.cols != renderConfig.width) {
             throw std::runtime_error("invalid image width (expected "
-                + std::to_string(inferrerConfig.width) + ", got " + std::to_string(mat.cols) + ")");
+                + std::to_string(renderConfig.width) + ", got " + std::to_string(mat.cols) + ")");
         }
     }
 
@@ -307,7 +342,7 @@ bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vecto
         }
 
         // Copy output to host
-        std::vector<cv::cuda::GpuMat> temp(inferrerConfig.nbBatches);
+        std::vector<cv::cuda::GpuMat> temp(renderConfig.nbBatches);
         for (int i = 0; i < temp.size(); ++i) {
             auto shape = context->getTensorShape(engine->getIOTensorName(1));
             temp[i].create(shape.d[2], shape.d[3], CV_32FC3);
@@ -333,48 +368,15 @@ catch (const std::exception& e) {
     return false;
 }
 
-// overlap is normalized to [0, 1]
-// TODO: WARNING MESSAGES FOR ROUNDING ERRORS
-bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2d overlap) try {
-    const cv::Size2i inputTileSize = {
-        context->getTensorShape(engine->getIOTensorName(0)).d[3],
-        context->getTensorShape(engine->getIOTensorName(0)).d[2]
-    };
-
-    const cv::Size2i outputTileSize = {
-        context->getTensorShape(engine->getIOTensorName(1)).d[3],
-        context->getTensorShape(engine->getIOTensorName(1)).d[2]
-    };
-
-    const cv::Size2i scaledOutputTileSize = {
-        inputTileSize.width * scaling.x,
-        inputTileSize.width * scaling.y
-    };
-
-    const cv::Size2i scaledInputTileSize = {
-        static_cast<int>(std::lround(static_cast<double>(outputTileSize.width) / scaledOutputTileSize.width * inputTileSize.width)),
-        static_cast<int>(std::lround(static_cast<double>(outputTileSize.height) / scaledOutputTileSize.height * inputTileSize.height))
-    };
-
-    const cv::Point2i inputOverlap = {
-        static_cast<int>(std::lround(inputTileSize.width * overlap.x)),
-        static_cast<int>(std::lround(inputTileSize.height * overlap.y))
-    };
-
-    const cv::Point2i scaledOutputOverlap = {
-        static_cast<int>(std::lround(scaledOutputTileSize.width * overlap.x)),
-        static_cast<int>(std::lround(scaledOutputTileSize.height * overlap.y))
-    };
-
-    output.create(input.rows * scaling.x, input.cols * scaling.y, CV_32FC3);
+bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try {
+    output.create(input.rows * renderConfig.scaling.x, input.cols * renderConfig.scaling.y, CV_32FC3);
     output.setTo(cv::Scalar(0, 0, 0));
-    const std::vector<cv::cuda::GpuMat> weights = generateTileWeights(scaledOutputOverlap, outputTileSize);
 
+    // Calculate tiling
     const cv::Point2i tiling = {
         static_cast<int>(std::lround(std::ceil(static_cast<double>(input.cols - inputOverlap.x) / (scaledInputTileSize.width - inputOverlap.x)))),
         static_cast<int>(std::lround(std::ceil(static_cast<double>(input.rows - inputOverlap.y) / (scaledInputTileSize.height - inputOverlap.y))))
     };
-
     const int tileCount = tiling.x * tiling.y;
 
     // Calculate tile rects
@@ -385,12 +387,12 @@ bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv
     for (int i = 0; i < tiling.y; ++i) {
         for (int j = 0; j < tiling.x; ++j) {
             // offset_border + offset_scaled_tile - offset_overlap
-            inputTileRects.emplace_back(
-                -((inputTileSize.width - scaledInputTileSize.width) / 2) + (j * scaledInputTileSize.width) - (j * inputOverlap.x),
-                -((inputTileSize.height - scaledInputTileSize.height) / 2) + (i * scaledInputTileSize.height) - (i * inputOverlap.y),
-                inputTileSize.width,
-                inputTileSize.height
-            );
+            cv::Rect2i inputTileRect;
+            inputTileRect.x = -((inputTileSize.width - scaledInputTileSize.width) / 2) + (j * scaledInputTileSize.width) - (j * inputOverlap.x);
+            inputTileRect.y = -((inputTileSize.height - scaledInputTileSize.height) / 2) + (i * scaledInputTileSize.height) - (i * inputOverlap.y);
+            inputTileRect.width = inputTileSize.width;
+            inputTileRect.height = inputTileSize.height;
+            inputTileRects.emplace_back(inputTileRect);
 
             // offset_tile - offset_overlap
             cv::Rect2i outputTileRect;
@@ -410,7 +412,7 @@ bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv
         std::vector<cv::cuda::GpuMat> outputTile;
         infer(inputTile, outputTile);
 
-        if (overlap.x != 0 || overlap.y != 0) {
+        if (renderConfig.overlap.x != 0 || renderConfig.overlap.y != 0) {
             // Blend left
             if (outputTileRects[i].x != 0) {
                 cv::cuda::multiply(outputTile[0], weights[3], outputTile[0]);
@@ -440,7 +442,7 @@ bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv
     return true;
 }
 catch (const std::exception& e) {
-    PLOG(plog::error) << "Failed to process: " << e.what() << ".";
+    PLOG(plog::error) << "Failed to render: " << e.what() << ".";
     return false;
 }
 
@@ -491,7 +493,7 @@ std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(cv::cuda::GpuMat& blo
     return images;
 }
 
-bool trt::Img2Img::serializeConfig(std::string& path, const BuilderConfig& config) {
+bool trt::Img2Img::serializeConfig(std::string& path, const BuildConfig& config) {
     const auto filenameIndex = path.find_last_of('/') + 1;
     path = path.substr(filenameIndex, path.find_last_of('.') - filenameIndex);
 
@@ -533,7 +535,7 @@ bool trt::Img2Img::serializeConfig(std::string& path, const BuilderConfig& confi
     return true;
 }
 
-bool trt::Img2Img::deserializeConfig(const std::string& path, BuilderConfig& config) {
+bool trt::Img2Img::deserializeConfig(const std::string& path, BuildConfig& config) {
     std::string trtModelName = path.substr(path.find_last_of('/') + 1);
     std::istringstream iss(trtModelName);
     std::string token;
