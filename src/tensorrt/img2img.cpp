@@ -259,7 +259,7 @@ catch (const std::exception& e) {
 }
 
 // TODO: VALIDATE THAT BATCHES WORK
-bool trt::Img2Img::infer(std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
+bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
     // Check batch size
     if (inputs.size() != inferrerConfig.nbBatches) {
         throw std::runtime_error("invalid input batch size (expected "
@@ -333,7 +333,113 @@ catch (const std::exception& e) {
     return false;
 }
 
-cv::cuda::GpuMat trt::Img2Img::blobFromImages(std::vector<cv::cuda::GpuMat>& images, bool normalize) {
+// overlap is normalized to [0, 1]
+bool trt::Img2Img::process(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output, cv::Point2i scaling, cv::Point2f overlap) try {
+
+    const cv::Size2i inputTileSize = {
+        context->getTensorShape(engine->getIOTensorName(0)).d[3],
+        context->getTensorShape(engine->getIOTensorName(0)).d[2]
+    };
+
+    const cv::Size2i outputTileSize = {
+        context->getTensorShape(engine->getIOTensorName(1)).d[3],
+        context->getTensorShape(engine->getIOTensorName(1)).d[2]
+    };
+
+    const cv::Size2i scaledOutputTileSize = {
+        inputTileSize.width * scaling.x,
+        inputTileSize.width * scaling.y
+    };
+
+    const cv::Point2i scaledOverlap = {
+        static_cast<int>(scaledOutputTileSize.width * overlap.x),
+        static_cast<int>(scaledOutputTileSize.height * overlap.y)
+    };
+
+    const cv::Point2f ratio = {
+        static_cast<float>(outputTileSize.width) / (inputTileSize.width * scaling.x),
+        static_cast<float>(outputTileSize.height) / (inputTileSize.height * scaling.y)
+    };
+
+    output.create(input.rows * scaling.x, input.cols * scaling.y, CV_32FC3);
+    output.setTo(cv::Scalar(0, 0, 0));
+    const std::vector<cv::cuda::GpuMat> weights = generateTileWeights(scaledOverlap, outputTileSize); //CHANGE TO 1024
+
+    const cv::Point2i tiling = {
+        static_cast<int>(std::ceil(static_cast<float>(input.cols) / (inputTileSize.width * ratio.x - inputTileSize.width * overlap.x))),
+        static_cast<int>(std::ceil(static_cast<float>(input.rows) / (inputTileSize.height * ratio.y - inputTileSize.height * overlap.y)))
+    };
+
+    const int tileCount = tiling.x * tiling.y;
+
+    // Calculate tile rects
+    std::vector<cv::Rect2i> inputTileRects;
+    std::vector<cv::Rect2i> outputTileRects;
+    inputTileRects.reserve(tiling.x * tiling.y);
+    outputTileRects.reserve(tiling.x * tiling.y);
+    for (int i = 0; i < tiling.y; ++i) {
+        for (int j = 0; j < tiling.x; ++j) {
+            // offset_border + offset_scaled_tile - offset_overlap
+            inputTileRects.emplace_back(
+                -((inputTileSize.width - (inputTileSize.width * ratio.x)) / 2) + (j * inputTileSize.width * ratio.x) - (j * inputTileSize.width * overlap.x),
+                -((inputTileSize.height - (inputTileSize.height * ratio.y)) / 2) + (i * inputTileSize.height * ratio.y) - (i * inputTileSize.height * overlap.y),
+                inputTileSize.width,
+                inputTileSize.height
+            );
+
+            // offset_tile - offset_overlap
+            cv::Rect2i outputTileRect;
+            outputTileRect.x = j * outputTileSize.width - (j * (outputTileSize.width / ratio.x) * overlap.x);
+            outputTileRect.y = i * outputTileSize.height - (i * (outputTileSize.height / ratio.y) * overlap.y);
+            outputTileRect.width = outputTileRect.x + outputTileSize.width > output.cols ? output.cols - outputTileRect.x : outputTileSize.width;
+            outputTileRect.height = outputTileRect.y + outputTileSize.height > output.rows ? output.rows - outputTileRect.y : outputTileSize.height;
+            outputTileRects.emplace_back(outputTileRect);
+        }
+    }
+
+    std::vector<cv::cuda::GpuMat> tiles;
+    for (size_t i = 0; i < tileCount; ++i) {
+        std::vector<cv::cuda::GpuMat> inputTile {
+            padRoi(input, inputTileRects[i])
+        };
+        std::vector<cv::cuda::GpuMat> outputTile;
+        infer(inputTile, outputTile);
+
+        if (overlap.x != 0 || overlap.y != 0) {
+            // Blend left
+            if (outputTileRects[i].x != 0) {
+                cv::cuda::multiply(outputTile[0], weights[3], outputTile[0]);
+            }
+
+            // Blend top
+            if (outputTileRects[i].y != 0) {
+                cv::cuda::multiply(outputTile[0], weights[0], outputTile[0]);
+            }
+
+            // Blend right
+            if (outputTileRects[i].x + outputTileRects[i].width < output.cols) {
+                cv::cuda::multiply(outputTile[0], weights[1], outputTile[0]);
+            }
+
+            // Blend bottom
+            if (outputTileRects[i].y + outputTileRects[i].height < output.rows) {
+                cv::cuda::multiply(outputTile[0], weights[2], outputTile[0]);
+            }
+        }
+
+        cv::Rect2i roi(0, 0, outputTileRects[i].width, outputTileRects[i].height);
+        cv::cuda::add(outputTile[0](roi), output(outputTileRects[i]), output(outputTileRects[i]));
+    }
+    output.convertTo(output, CV_8UC3, 255.f);
+
+    return true;
+}
+catch (const std::exception& e) {
+    PLOG(plog::error) << "Failed to process: " << e.what() << ".";
+    return false;
+}
+
+cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat>& images, bool normalize) {
     cv::cuda::GpuMat gpu_dst(1, images.size() * images[0].channels() * images[0].rows * images[0].cols, CV_8U);
 
     size_t width = images[0].cols * images[0].rows;
@@ -373,7 +479,9 @@ std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(cv::cuda::GpuMat& blo
         };
 
         cv::cuda::merge(channels, image);
-        image.convertTo(images[0], CV_8UC3, denormalize ? 255.f : 1.f);
+
+        image.copyTo(images[i]);
+        //image.convertTo(images[i], CV_8UC3, denormalize ? 255.f : 1.f);
     }
     return images;
 }
@@ -477,4 +585,71 @@ void trt::Img2Img::getDeviceNames(std::vector<std::string>& deviceNames) {
         cudaGetDeviceProperties(&deviceProp, i);
         deviceNames.emplace_back(deviceProp.name);
     }
+}
+
+cv::cuda::GpuMat trt::Img2Img::padRoi(const cv::cuda::GpuMat& input, cv::Rect2i roi) {
+    int tl_x = roi.x;
+    int tl_y = roi.y;
+    int br_x = roi.x + roi.width;
+    int br_y = roi.y + roi.height;
+    int width = roi.width;
+    int height = roi.height;
+
+    if (tl_x < 0 || tl_y < 0 || br_x > input.cols || br_y > input.rows) {
+        int left = 0, right = 0, top = 0, bottom = 0;
+
+        if (tl_x < 0) {
+            width += tl_x;
+            left = -tl_x;
+            tl_x = 0;
+        }
+        if (tl_y < 0) {
+            height += tl_y;
+            top = -tl_y;
+            tl_y = 0;
+        }
+        if (br_x > input.cols) {
+            width -= br_x - input.cols;
+            right = br_x - input.cols;
+        }
+        if (br_y > input.rows) {
+            height -= br_y - input.rows;
+            bottom = br_y - input.rows;
+        }
+
+        cv::cuda::GpuMat output;
+        cv::cuda::copyMakeBorder(input(cv::Rect2i(tl_x, tl_y, width, height)),
+            output, top, bottom, left, right, cv::BORDER_REPLICATE);
+        return output;
+    } else {
+        return input(cv::Rect2i(tl_x, tl_y, width, height));
+    }
+}
+
+std::vector<cv::cuda::GpuMat> trt::Img2Img::generateTileWeights(const cv::Point2i& overlap, const cv::Size2i& size) {
+    std::vector<cv::cuda::GpuMat> weights(4);
+    weights[0] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+    weights[3] = cv::cuda::GpuMat(size, CV_32FC3, cv::Scalar(1.f, 1.f, 1.f));
+
+    // Top
+    const int height = overlap.y + 1;
+    for (size_t i = 1; i < height; ++i) {
+        float alpha = static_cast<float>(i) / height;
+        weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
+    }
+
+    // Left
+    const int width = overlap.x + 1;
+    for (size_t i = 1; i < width; ++i) {
+        float alpha = static_cast<float>(i) / width;
+        weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
+    }
+
+    // Bottom
+    cv::cuda::flip(weights[0], weights[2], 0);
+
+    // Right
+    cv::cuda::flip(weights[3], weights[1], 1);
+
+    return weights;
 }
