@@ -1,8 +1,6 @@
 #include "img2img.h"
 
-trt::Img2Img::Img2Img() {
-
-}
+trt::Img2Img::Img2Img() = default;
 
 trt::Img2Img::~Img2Img() {
     for (auto& buffer : buffers) {
@@ -99,25 +97,25 @@ bool trt::Img2Img::build(const std::string& onnxModelPath, const BuildConfig& co
     // Configure builder stream
     builderConfig->setProfileStream(stream);
 
-    // Build engine
-    std::unique_ptr<nvinfer1::IHostMemory> engine {
+    // Build network
+    std::unique_ptr<nvinfer1::IHostMemory> serializedNetwork {
         builder->buildSerializedNetwork(*network, *builderConfig)
     };
-    if (!engine) {
+    if (!serializedNetwork) {
         throw std::runtime_error("could not build serialized network");
     }
 
-    // Serialize engine
+    // Serialize network
     try {
         std::string modelPath = onnxModelPath;
         serializeConfig(modelPath, config);
         std::ofstream engineFile(modelPath, std::ios::binary);
-        engineFile.write(reinterpret_cast<const char*>(engine->data()), engine->size());
+        engineFile.write(reinterpret_cast<const char*>(serializedNetwork->data()), static_cast<long long>(serializedNetwork->size()));
         engineFile.close();
     }
     catch (const std::exception& e) {
         cudaAssert(cudaStreamDestroy(stream));
-        throw std::runtime_error("could not serialize engine to disk (" + std::string(e.what()) + ")");
+        throw std::runtime_error("could not serialize network to disk (" + std::string(e.what()) + ")");
     }
 
     cudaAssert(cudaStreamDestroy(stream));
@@ -141,13 +139,13 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
     }
 
     // Read engine
-    std::vector<char> buffer;
+    std::vector<char> engineBuffer;
     try {
         std::ifstream file(modelPath, std::ios::binary | std::ios::ate);
         std::streamsize fileSize = file.tellg();
-        buffer.resize(fileSize);
+        engineBuffer.resize(fileSize);
         file.seekg(0, std::ios::beg);
-        file.read(buffer.data(), fileSize);
+        file.read(engineBuffer.data(), fileSize);
     }
     catch (const std::exception& e) {
         throw std::runtime_error("could not read engine file to buffer (" + std::string(e.what()) + ")");
@@ -169,7 +167,7 @@ bool trt::Img2Img::load(const std::string& modelPath, trt::RenderConfig& config)
     }
 
     // Deserialize engine
-    engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(buffer.data(), buffer.size()));
+    engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(engineBuffer.data(), engineBuffer.size()));
     if (!engine) {
         throw std::runtime_error("could not deserialize cuda engine from buffer");
     }
@@ -293,6 +291,96 @@ catch (const std::exception& e) {
     return false;
 }
 
+bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try {
+    output.create(input.rows * renderConfig.scaling.x, input.cols * renderConfig.scaling.y, CV_32FC3);
+    output.setTo(cv::Scalar(0, 0, 0));
+
+    // Calculate tiling
+    const cv::Point2i tiling = {
+        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.cols - inputOverlap.x) / (scaledInputTileSize.width - inputOverlap.x)))),
+        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.rows - inputOverlap.y) / (scaledInputTileSize.height - inputOverlap.y))))
+    };
+    const int tileCount = tiling.x * tiling.y;
+
+    // Calculate tile rects
+    std::vector<cv::Rect2i> inputTileRects;
+    std::vector<cv::Rect2i> outputTileRects;
+    inputTileRects.reserve(tiling.x * tiling.y);
+    outputTileRects.reserve(tiling.x * tiling.y);
+    for (int i = 0; i < tiling.y; ++i) {
+        for (int j = 0; j < tiling.x; ++j) {
+            // offset_border + offset_scaled_tile - offset_overlap
+            cv::Rect2i inputTileRect;
+            inputTileRect.x = -((inputTileSize.width - scaledInputTileSize.width) / 2) + (j * scaledInputTileSize.width) - (j * inputOverlap.x);
+            inputTileRect.y = -((inputTileSize.height - scaledInputTileSize.height) / 2) + (i * scaledInputTileSize.height) - (i * inputOverlap.y);
+            inputTileRect.width = inputTileSize.width;
+            inputTileRect.height = inputTileSize.height;
+            inputTileRects.emplace_back(inputTileRect);
+
+            // offset_tile - offset_overlap
+            cv::Rect2i outputTileRect;
+            outputTileRect.x = j * outputTileSize.width - (j * scaledOutputOverlap.x);
+            outputTileRect.y = i * outputTileSize.height - (i * scaledOutputOverlap.y);
+            outputTileRect.width = outputTileRect.x + outputTileSize.width > output.cols ? output.cols - outputTileRect.x : outputTileSize.width;
+            outputTileRect.height = outputTileRect.y + outputTileSize.height > output.rows ? output.rows - outputTileRect.y : outputTileSize.height;
+            outputTileRects.emplace_back(outputTileRect);
+        }
+    }
+
+    for (size_t i = 0; i < tileCount;) {
+        std::vector<cv::cuda::GpuMat> inputTiles;
+        inputTiles.reserve(renderConfig.nbBatches);
+        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
+            if (i + j < tileCount) {
+                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j]));
+            } else {
+                inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
+            }
+        }
+        std::vector<cv::cuda::GpuMat> outputTiles;
+        outputTiles.reserve(renderConfig.nbBatches);
+        infer(inputTiles, outputTiles);
+
+        if (!(renderConfig.overlap.x == 0 && renderConfig.overlap.y == 0)) {
+            for (size_t j = 0; j < renderConfig.nbBatches; ++j, ++i) {
+                if (i >= tileCount) {
+                    break;
+                }
+
+                // Blend left
+                if (outputTileRects[i].x != 0) {
+                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j]);
+                }
+
+                // Blend top
+                if (outputTileRects[i].y != 0) {
+                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j]);
+                }
+
+                // Blend right
+                if (outputTileRects[i].x + outputTileRects[i].width < output.cols) {
+                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j]);
+                }
+
+                // Blend bottom
+                if (outputTileRects[i].y + outputTileRects[i].height < output.rows) {
+                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j]);
+                }
+
+                cv::Rect2i roi(0, 0, outputTileRects[i].width, outputTileRects[i].height);
+                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i]), output(outputTileRects[i]));
+            }
+        }
+    }
+    output.convertTo(output, CV_8UC3, 255.f);
+
+    return true;
+}
+catch (const std::exception& e) {
+    PLOG(plog::error) << "Failed to render: " << e.what() << ".";
+    return false;
+}
+
 // TODO: VALIDATE THAT BATCHES WORK
 bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
     // Check batch size
@@ -330,7 +418,7 @@ bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vecto
 
     try {
         // Preprocess input
-        auto blob = blobFromImages(inputs, true);
+        auto blob = blobFromImages(inputs);
 
         // Copy blob to input tensor buffer
         cudaAssert(cudaMemcpyAsync(buffers[0].first, blob.ptr<void>(),
@@ -341,14 +429,8 @@ bool trt::Img2Img::infer(const std::vector<cv::cuda::GpuMat>& inputs, std::vecto
             throw std::runtime_error("could not enqueue inference");
         }
 
-        // Copy output to host
-        cv::cuda::GpuMat out(1, buffers[1].second, CV_8U);
-        cudaAssert(cudaMemcpyAsync(out.ptr<void>(), buffers[1].first,
-            buffers[1].second, cudaMemcpyDeviceToDevice, stream));
-
         // Postprocess output
-        outputs.clear();
-        outputs = imagesFromBlob(out, context->getTensorShape(engine->getIOTensorName(1)), true);
+        outputs = imagesFromBlob(buffers[1].first, context->getTensorShape(engine->getIOTensorName(1)));
     }
     catch (const std::exception& e) {
         cudaAssert(cudaStreamDestroy(stream));
@@ -364,139 +446,36 @@ catch (const std::exception& e) {
     return false;
 }
 
-bool trt::Img2Img::render(cv::cuda::GpuMat& input, cv::cuda::GpuMat& output) try {
-    output.create(input.rows * renderConfig.scaling.x, input.cols * renderConfig.scaling.y, CV_32FC3);
-    output.setTo(cv::Scalar(0, 0, 0));
-
-    // Calculate tiling
-    const cv::Point2i tiling = {
-        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.cols - inputOverlap.x) / (scaledInputTileSize.width - inputOverlap.x)))),
-        static_cast<int>(std::lround(std::ceil(static_cast<double>(input.rows - inputOverlap.y) / (scaledInputTileSize.height - inputOverlap.y))))
-    };
-    const int tileCount = tiling.x * tiling.y;
-
-    // Calculate tile rects
-    std::vector<cv::Rect2i> inputTileRects;
-    std::vector<cv::Rect2i> outputTileRects;
-    inputTileRects.reserve(tiling.x * tiling.y);
-    outputTileRects.reserve(tiling.x * tiling.y);
-    for (int i = 0; i < tiling.y; ++i) {
-        for (int j = 0; j < tiling.x; ++j) {
-            // offset_border + offset_scaled_tile - offset_overlap
-            cv::Rect2i inputTileRect;
-            inputTileRect.x = -((inputTileSize.width - scaledInputTileSize.width) / 2) + (j * scaledInputTileSize.width) - (j * inputOverlap.x);
-            inputTileRect.y = -((inputTileSize.height - scaledInputTileSize.height) / 2) + (i * scaledInputTileSize.height) - (i * inputOverlap.y);
-            inputTileRect.width = inputTileSize.width;
-            inputTileRect.height = inputTileSize.height;
-            inputTileRects.emplace_back(inputTileRect);
-
-            // offset_tile - offset_overlap
-            cv::Rect2i outputTileRect;
-            outputTileRect.x = j * outputTileSize.width - (j * scaledOutputOverlap.x);
-            outputTileRect.y = i * outputTileSize.height - (i * scaledOutputOverlap.y);
-            outputTileRect.width = outputTileRect.x + outputTileSize.width > output.cols ? output.cols - outputTileRect.x : outputTileSize.width;
-            outputTileRect.height = outputTileRect.y + outputTileSize.height > output.rows ? output.rows - outputTileRect.y : outputTileSize.height;
-            outputTileRects.emplace_back(outputTileRect);
-        }
-    }
-
-    for (size_t i = 0; i < tileCount; i += renderConfig.nbBatches) {
-        std::vector<cv::cuda::GpuMat> inputTiles;
-        inputTiles.reserve(renderConfig.nbBatches);
-        for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
-            if (i + j < tileCount) {
-                inputTiles.emplace_back(padRoi(input, inputTileRects[i + j]));
-            } else {
-                inputTiles.emplace_back(inputTileSize.height, inputTileSize.width, CV_32FC3, cv::Scalar(0, 0, 0));
-            }
-        }
-        std::vector<cv::cuda::GpuMat> outputTiles;
-        outputTiles.reserve(renderConfig.nbBatches);
-        infer(inputTiles, outputTiles);
-
-        if (!(renderConfig.overlap.x == 0 && renderConfig.overlap.y == 0)) {
-            for (size_t j = 0; j < renderConfig.nbBatches; ++j) {
-                if (i + j >= tileCount) {
-                    continue;
-                }
-
-                // Blend left
-                if (outputTileRects[i + j].x != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[3], outputTiles[j]);
-                }
-
-                // Blend top
-                if (outputTileRects[i + j].y != 0) {
-                    cv::cuda::multiply(outputTiles[j], weights[0], outputTiles[j]);
-                }
-
-                // Blend right
-                if (outputTileRects[i + j].x + outputTileRects[i + j].width < output.cols) {
-                    cv::cuda::multiply(outputTiles[j], weights[1], outputTiles[j]);
-                }
-
-                // Blend bottom
-                if (outputTileRects[i + j].y + outputTileRects[i + j].height < output.rows) {
-                    cv::cuda::multiply(outputTiles[j], weights[2], outputTiles[j]);
-                }
-
-                cv::Rect2i roi(0, 0, outputTileRects[i + j].width, outputTileRects[i + j].height);
-                cv::cuda::add(outputTiles[j](roi), output(outputTileRects[i + j]), output(outputTileRects[i + j]));
-            }
-        }
-    }
-    output.convertTo(output, CV_8UC3, 255.f);
-
-    return true;
-}
-catch (const std::exception& e) {
-    PLOG(plog::error) << "Failed to render: " << e.what() << ".";
-    return false;
-}
-
-cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat>& images, bool normalize) {
-    cv::cuda::GpuMat gpu_dst(1, images.size() * images[0].channels() * images[0].rows * images[0].cols, CV_8U);
+cv::cuda::GpuMat trt::Img2Img::blobFromImages(const std::vector<cv::cuda::GpuMat>& images) {
+    cv::cuda::GpuMat blob(static_cast<int>(images.size()), images[0].channels() * images[0].rows * images[0].cols, CV_8U);
 
     size_t width = images[0].cols * images[0].rows;
     for (size_t i = 0; i < images.size(); ++i) {
         std::vector<cv::cuda::GpuMat> channels {
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[0 * width + 3 * width * i])),
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[1 * width + 3 * width * i])),
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[2 * width + 3 * width * i]))
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(blob.ptr()[0 * width + 3 * width * i])),
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(blob.ptr()[1 * width + 3 * width * i])),
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(blob.ptr()[2 * width + 3 * width * i]))
         };
-        cv::cuda::split(images[i], channels);  // HWC -> CHW
+        cv::cuda::split(images[i], channels);
     }
 
-    cv::cuda::GpuMat mfloat;
-    if (normalize) {
-        // [0.f, 1.f]
-        gpu_dst.convertTo(mfloat, CV_32FC3, 1.f / 255.f);
-    } else {
-        // [0.f, 255.f]
-        gpu_dst.convertTo(mfloat, CV_32FC3);
-    }
-
-    return mfloat;
+    blob.convertTo(blob, CV_32FC3, 1.0 / 255.0);
+    return blob;
 }
 
-std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(cv::cuda::GpuMat& blob, nvinfer1::Dims32 shape, bool denormalize) {
+std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(void* blobPtr, nvinfer1::Dims32 shape) {
     std::vector<cv::cuda::GpuMat> images(shape.d[0]);
 
-    int width = shape.d[2] * shape.d[3] * sizeof(float);
+    size_t width = shape.d[2] * shape.d[3] * sizeof(float);
     for (int i = 0; i < images.size(); ++i) {
-        cv::cuda::GpuMat image;
-        image.create(shape.d[2], shape.d[3], CV_32FC3);
+        images[i].create(shape.d[2], shape.d[3], CV_32FC3);
 
         std::vector<cv::cuda::GpuMat> channels {
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, &(blob.ptr()[0 * width + 3 * width * i])),
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, &(blob.ptr()[1 * width + 3 * width * i])),
-            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, &(blob.ptr()[2 * width + 3 * width * i]))
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 0 * width + 3 * width * i),
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 1 * width + 3 * width * i),
+            cv::cuda::GpuMat(shape.d[2], shape.d[3], CV_32F, static_cast<unsigned char*>(blobPtr) + 2 * width + 3 * width * i)
         };
-
-        cv::cuda::merge(channels, image);
-
-        image.copyTo(images[i]);
-        //image.convertTo(images[i], CV_8UC3, denormalize ? 255.f : 1.f);
+        cv::cuda::merge(channels, images[i]);
     }
     return images;
 }
@@ -602,7 +581,7 @@ void trt::Img2Img::getDeviceNames(std::vector<std::string>& deviceNames) {
     }
 }
 
-cv::cuda::GpuMat trt::Img2Img::padRoi(const cv::cuda::GpuMat& input, cv::Rect2i roi) {
+cv::cuda::GpuMat trt::Img2Img::padRoi(const cv::cuda::GpuMat& input, const cv::Rect2i& roi) {
     int tl_x = roi.x;
     int tl_y = roi.y;
     int br_x = roi.x + roi.width;
@@ -648,15 +627,15 @@ std::vector<cv::cuda::GpuMat> trt::Img2Img::generateTileWeights(const cv::Point2
 
     // Top
     const int height = overlap.y + 1;
-    for (size_t i = 1; i < height; ++i) {
-        float alpha = static_cast<float>(i) / height;
+    for (int i = 1; i < height; ++i) {
+        double alpha = static_cast<double>(i) / height;
         weights[0].row(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
     }
 
     // Left
     const int width = overlap.x + 1;
-    for (size_t i = 1; i < width; ++i) {
-        float alpha = static_cast<float>(i) / width;
+    for (int i = 1; i < width; ++i) {
+        double alpha = static_cast<double>(i) / width;
         weights[3].col(i - 1).setTo(cv::Scalar(alpha, alpha, alpha));
     }
 
