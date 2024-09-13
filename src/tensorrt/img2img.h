@@ -1,6 +1,7 @@
 #ifndef WAIFU2X_TENSORRT_TRT_IMG2IMG_H
 #define WAIFU2X_TENSORRT_TRT_IMG2IMG_H
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -16,7 +17,9 @@
 #include <NvInfer.h>
 
 #include "config.h"
+#include "helper.h"
 #include "logger.h"
+#include "utilities/time.h"
 
 namespace trt {
     class Img2Img {
@@ -31,9 +34,7 @@ namespace trt {
         Logger gLogger;
 
         InferrerConfig inferrerConfig;
-        std::vector<float> input;
-        std::vector<float> output;
-        std::vector<std::pair<void*, int>> buffers;
+        std::vector<std::pair<void*, size_t>> buffers;
 
         std::unique_ptr<nvinfer1::IRuntime> runtime;
         std::unique_ptr<nvinfer1::ICudaEngine> engine;

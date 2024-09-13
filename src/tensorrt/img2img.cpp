@@ -5,326 +5,345 @@ trt::Img2Img::Img2Img() {
 }
 
 trt::Img2Img::~Img2Img() {
-
+    for (auto& buffer : buffers) {
+        cudaAssert(cudaFree(buffer.first));
+    }
 }
 
-// TODO: error handling and stream deallocation
-// Set cuda device when building the engine
-bool trt::Img2Img::build(const std::string& onnxModelPath, const BuilderConfig& config) {
-    PLOG(plog::info) << "Img2Img build started with configuration"
-                     << ": device = " << config.deviceIndex
-                     << ", precision = " << (config.precision == Precision::FP16 ? "FP16" : "TF32")
-                     << ", minBatchSize = " << config.minBatchSize
-                     << ", optBatchSize = " << config.optBatchSize
-                     << ", maxBatchSize = " << config.maxBatchSize
-                     << ", minWidth = " << config.minWidth
-                     << ", optWidth = " << config.optWidth
-                     << ", maxWidth = " << config.maxWidth
-                     << ", minHeight = " << config.minHeight
-                     << ", optHeight = " << config.optHeight
-                     << ", maxHeight = " << config.maxHeight
-                     << ".";
+// TODO: ADD INPUT TENSOR SHAPE CONSTRAINTS
+// TODO: SUPPORT MULTIPLE OPTIMIZATION PROFILES
+// TODO: CHANGE MODEL CONFIGURATION SERIALIZATION
+bool trt::Img2Img::build(const std::string& onnxModelPath, const BuilderConfig& config) try {
+    // Set cuda device
+    try {
+        trt::cudaAssert(cudaSetDevice(config.deviceId));
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not set cuda device to device id "
+            + std::to_string(config.deviceId) + " (" + e.what() + ")");
+    }
 
     // Create builder
-    PLOG(plog::info) << "Creating builder...";
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(nvinfer1::createInferBuilder(gLogger));
     if (!builder) {
-        PLOG(plog::error) << "Failed to create builder.";
-        return false;
+        throw std::runtime_error("could not create builder");
     }
 
     // Create network
-    PLOG(plog::info) << "Creating network...";
-    auto explicitBatch = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
-    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(explicitBatch));
+    auto flags = 1U << static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(flags));
     if (!network) {
-        PLOG(plog::error) << "Failed to create network.";
-        return false;
+        throw std::runtime_error("could note create network");
     }
 
     // Create parser
-    PLOG(plog::info) << "Creating parser...";
     auto parser = std::unique_ptr<nvonnxparser::IParser>(nvonnxparser::createParser(*network, gLogger));
     if (!parser) {
-        PLOG(plog::error) << "Failed to create parser.";
-        return false;
+        throw std::runtime_error("could not create parser");
     }
 
     // Parse ONNX model
-    PLOG(plog::info) << "Parsing ONNX model...";
     auto parsed = parser->parseFromFile(onnxModelPath.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kVERBOSE));
     if (!parsed) {
-        PLOG(plog::error) << "Failed to parse ONNX model.";
-        return false;
+        throw std::runtime_error("could not parse ONNX model");
     }
 
     // Create builder config
-    PLOG(plog::info) << "Creating builder config...";
     auto builderConfig = std::unique_ptr<nvinfer1::IBuilderConfig>(builder->createBuilderConfig());
     if (!builderConfig) {
-        PLOG(plog::error) << "Failed to create builder config.";
-        return false;
+        throw std::runtime_error("could not create builder config");
     }
 
-    //Create optimization profile
-    PLOG(plog::info) << "Creating optimization profile...";
+    // Configure builder optimization profile
     auto nbInputs = network->getNbInputs();
     auto profile = builder->createOptimizationProfile();
-    for (int32_t i = 0; i < nbInputs; ++i) {
+    for (int i = 0; i < nbInputs; ++i) {
         const auto input = network->getInput(i);
         const auto inputName = input->getName();
         const auto inputDims = input->getDimensions();
-        int32_t channels = inputDims.d[1];
+        int channels = inputDims.d[1];
 
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN,
-                               nvinfer1::Dims4 { config.minBatchSize, channels, config.minHeight, config.minWidth });
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT,
-                               nvinfer1::Dims4 { config.optBatchSize, channels, config.optHeight, config.optWidth });
-        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX,
-                               nvinfer1::Dims4 { config.maxBatchSize, channels, config.maxHeight, config.maxWidth });
+        auto min = nvinfer1::Dims4{config.minBatchSize, channels, config.minHeight, config.minWidth};
+        auto opt = nvinfer1::Dims4{config.optBatchSize, channels, config.optHeight, config.optWidth};
+        auto max = nvinfer1::Dims4{config.maxBatchSize, channels, config.maxHeight, config.maxWidth};
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, min);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, opt);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, max);
     }
-    builderConfig->addOptimizationProfile(profile);
+    if (builderConfig->addOptimizationProfile(profile) != 0) {
+        throw std::runtime_error("could not add optimization profile");
+    }
 
-    // Set precision
-    PLOG(plog::info) << "Setting precision...";
+    // Configure builder precision
     if (config.precision == Precision::FP16) {
         if (!builder->platformHasFastFp16()) {
-            PLOG(plog::error) << "Platform does not support FP16.";
-            return false;
+            throw std::runtime_error("could not set precision (platform does not support FP16)");
         }
         builderConfig->setFlag(nvinfer1::BuilderFlag::kFP16);
     } else if (config.precision == Precision::TF32) {
         if (!builder->platformHasTf32()) {
-            PLOG(plog::error) << "Platform does not support TF32.";
-            return false;
+            throw std::runtime_error("could not set precision (platform does not support TF32)");
         }
         builderConfig->setFlag(nvinfer1::BuilderFlag::kTF32);
     }
 
     // Create stream
     cudaStream_t stream;
-    cudaStreamCreate(&stream);
+    try {
+        cudaAssert(cudaStreamCreate(&stream));
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not create cuda stream (" + std::string(e.what()) + ")");
+    }
+
+    // Configure builder stream
     builderConfig->setProfileStream(stream);
 
     // Build engine
-    PLOG(plog::info) << "Building engine...";
     std::unique_ptr<nvinfer1::IHostMemory> engine {
-            builder->buildSerializedNetwork(*network, *builderConfig)
+        builder->buildSerializedNetwork(*network, *builderConfig)
     };
     if (!engine) {
-        PLOG(plog::error) << "Failed to build engine.";
-        return false;
+        throw std::runtime_error("could not build serialized network");
     }
 
-    // Save engine
-    PLOG(plog::info) << "Saving engine...";
-    std::string modelPath = onnxModelPath;
-    if (!serializeConfig(modelPath, config)) {
-        PLOG(plog::error) << "Failed to serialize config to path.";
-        return false;
+    // Serialize engine
+    try {
+        std::string modelPath = onnxModelPath;
+        serializeConfig(modelPath, config);
+        std::ofstream engineFile(modelPath, std::ios::binary);
+        engineFile.write(reinterpret_cast<const char*>(engine->data()), engine->size());
+        engineFile.close();
     }
-    std::ofstream engineFile(modelPath, std::ios::binary);
-    engineFile.write(reinterpret_cast<const char*>(engine->data()), engine->size());
-    engineFile.close();
+    catch (const std::exception& e) {
+        cudaAssert(cudaStreamDestroy(stream));
+        throw std::runtime_error("could not serialize engine to disk (" + std::string(e.what()) + ")");
+    }
 
-    // Destroy stream
-    cudaStreamDestroy(stream);
+    cudaAssert(cudaStreamDestroy(stream));
     return true;
 }
+catch (const std::exception& e) {
+    PLOG(plog::error) << "Failed to build engine: " << e.what() << ".";
+    return false;
+}
 
-// TODO: Check if configs are compatible
-// TODO: error handling
-bool trt::Img2Img::load(const std::string& modelPath, trt::InferrerConfig& config) {
-    cudaSetDevice(config.deviceId);
-
-    // Read engine to buffer
-    PLOG(plog::info) << "Reading engine...";
-    std::ifstream file(modelPath, std::ios::binary | std::ios::ate);
-    std::streamsize fileSize = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<char> buffer(fileSize);
-    if (!file.read(buffer.data(), fileSize)) {
-        PLOG(plog::error) << "Failed to read engine.";
-        return false;
+// TODO: ENSURE CONFIGURATION COMPATIBILITY
+// TODO: SET OPTIMIZATION PROFILE VIA nvinfer1::IExecutionContext::setOptimizationProfileAsync
+bool trt::Img2Img::load(const std::string& modelPath, trt::InferrerConfig& config) try {
+    // Set cuda device
+    try {
+        trt::cudaAssert(cudaSetDevice(config.deviceId));
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not set cuda device to device id "
+            + std::to_string(config.deviceId) + " (" + e.what() + ")");
     }
 
-    // Create runtime
-    PLOG(plog::info) << "Creating runtime...";
-    runtime.reset();
-    runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+    // Read engine
+    std::vector<char> buffer;
+    try {
+        std::ifstream file(modelPath, std::ios::binary | std::ios::ate);
+        std::streamsize fileSize = file.tellg();
+        buffer.resize(fileSize);
+        file.seekg(0, std::ios::beg);
+        file.read(buffer.data(), fileSize);
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not read engine file to buffer (" + std::string(e.what()) + ")");
+    }
+
+    // Destroy existing engine
+    if (context || engine || runtime) {
+        context.reset();
+        engine.reset();
+        //runtime.reset();
+    }
+
+    // Create runtime if necessary
     if (!runtime) {
-        PLOG(plog::error) << "Failed to create runtime.";
-        return false;
+        runtime = std::unique_ptr<nvinfer1::IRuntime>(nvinfer1::createInferRuntime(gLogger));
+        if (!runtime) {
+            throw std::runtime_error("could not create infer runtime");
+        }
     }
 
     // Deserialize engine
-    PLOG(plog::info) << "Deserializing engine...";
-    engine.reset();
     engine = std::unique_ptr<nvinfer1::ICudaEngine>(runtime->deserializeCudaEngine(buffer.data(), buffer.size()));
     if (!engine) {
-        PLOG(plog::error) << "Failed to deserialize engine.";
-        return false;
+        throw std::runtime_error("could not deserialize cuda engine from buffer");
     }
 
-    // Validate engine file
-    if (engine->getNbIOTensors() != 2) {
-        PLOG(plog::error) << "Invalid number of IO tensors.";
-        PLOG(plog::error) << "Expected 2, got " << engine->getNbIOTensors() << ".";
-        return false;
+    // Validate engine
+    const auto nbIOTensors = engine->getNbIOTensors();
+    if (nbIOTensors != 2) {
+        throw std::runtime_error("invalid number of IO tensors (expected 2, got " + std::to_string(nbIOTensors) + ")");
     }
-
-    int nbDims = engine->getTensorShape(engine->getIOTensorName(0)).nbDims;
-    if (nbDims != 4) {
-        PLOG(plog::error) << "Invalid input tensor shape.";
-        PLOG(plog::error) << "Expected 4, got " << nbDims << ".";
-        return false;
-    }
-
-    nbDims = engine->getTensorShape(engine->getIOTensorName(1)).nbDims;
-    if (nbDims != 4) {
-        PLOG(plog::error) << "Invalid output tensor shape.";
-        PLOG(plog::error) << "Expected 4, got " << nbDims << ".";
-        return false;
+    for (int i = 0; i < nbIOTensors; ++i) {
+        const auto nbDims = engine->getTensorShape(engine->getIOTensorName(i)).nbDims;
+        if (nbDims != 4) {
+            throw std::runtime_error("invalid IO tensor shape (expected 4, got " + std::to_string(nbDims) + ")");
+        }
     }
 
     // Create execution context
-    PLOG(plog::info) << "Creating execution context...";
-    context.reset();
     context = std::unique_ptr<nvinfer1::IExecutionContext>(engine->createExecutionContext());
     if (!context) {
-        PLOG(plog::error) << "Failed to create execution context.";
-        return false;
+        throw std::runtime_error("could not create execution context");
     }
 
-    // Set input shape
-    if (!context->setInputShape(engine->getIOTensorName(0), config.inputShape)) {
-        PLOG(plog::error) << "Failed to set shape for input tensor \"" << engine->getIOTensorName(0) << "\".";
-        return false;
+    // Set tensor shapes
+    nvinfer1::Dims4 inputShape{config.nbBatches, config.channels, config.height, config.width};
+    if (!context->setInputShape(engine->getIOTensorName(0), inputShape)) {
+        throw std::runtime_error("could not set shape for input tensor");
     }
 
     // Create stream
     cudaStream_t stream;
-    cudaStreamCreate(&stream);
-
-    // Allocate buffers
-    buffers.resize(2);
-
-    // Allocate IO tensors
-    PLOG(plog::info) << "Allocating memory for IO tensors...";
-    {
-        auto tensorShape = context->getTensorShape(engine->getIOTensorName(0));
-        auto tensorSize = tensorShape.d[0] * tensorShape.d[1] * tensorShape.d[2] * tensorShape.d[3];
-        buffers[0].first = nullptr;
-        buffers[0].second = tensorSize * sizeof(float);
-        cudaMallocAsync(&buffers[0].first, buffers[0].second, stream);
-        input.clear();
-        input.resize(tensorSize);
-
-        tensorShape = context->getTensorShape(engine->getIOTensorName(1));
-        tensorSize = tensorShape.d[0] * tensorShape.d[1] * tensorShape.d[2] * tensorShape.d[3];
-        buffers[1].first = nullptr;
-        buffers[1].second = tensorSize * sizeof(float);
-        cudaMallocAsync(&buffers[1].first, buffers[1].second, stream);
-        output.clear();
-        output.resize(tensorSize);
+    try {
+        cudaAssert(cudaStreamCreate(&stream));
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not create cuda stream (" + std::string(e.what()) + ")");
     }
 
-    // Destroy stream
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
+    // Deallocate existing buffers
+    if (!buffers.empty()) {
+        try {
+            for (auto& buffer : buffers) {
+                cudaAssert(cudaFreeAsync(buffer.first, stream));
+            }
+        } catch (const std::exception& e) {
+            throw std::runtime_error("could not deallocate buffers (" + std::string(e.what()) + ")");
+        }
+        buffers.clear();
+        buffers.reserve(nbIOTensors);
+    }
+
+    // Allocate buffers and set tensor addresses
+    for (int i = 0; i < nbIOTensors; ++i) {
+        auto tensorName = engine->getIOTensorName(i);
+        auto tensorShape = context->getTensorShape(tensorName);
+        auto tensorSize = tensorShape.d[0] * tensorShape.d[1] * tensorShape.d[2] * tensorShape.d[3];
+
+        buffers.emplace_back(nullptr, tensorSize * sizeof(float));
+        try {
+            cudaAssert(cudaMallocAsync(&buffers[i].first, buffers[i].second, stream));
+        }
+        catch (const std::exception& e) {
+            // Clean up
+            for (auto& buffer : buffers) {
+                cudaAssert(cudaFreeAsync(buffer.first, stream));
+            }
+            cudaAssert(cudaStreamDestroy(stream));
+
+            throw std::runtime_error("could not allocate IO tensor buffers (" + std::string(e.what()) + ")");
+        }
+
+        if (!context->setTensorAddress(tensorName, buffers[i].first)) {
+            throw std::runtime_error("could not set tensor address");
+        }
+
+        PLOG(plog::debug) << "Allocated " << (static_cast<double>(buffers[i].second) / pow(1024, 2))
+            << " MiB on GPU for tensor \"" << tensorName << "\".";
+    }
 
     inferrerConfig = config;
-
+    cudaAssert(cudaStreamSynchronize(stream));
+    cudaAssert(cudaStreamDestroy(stream));
     return true;
 }
+catch (const std::exception& e) {
+    PLOG(plog::error) << "Failed to load engine: " << e.what() << ".";
+    return false;
+}
 
-bool trt::Img2Img::infer(std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) {
+// TODO: VALIDATE THAT BATCHES WORK
+bool trt::Img2Img::infer(std::vector<cv::cuda::GpuMat>& inputs, std::vector<cv::cuda::GpuMat>& outputs) try {
     // Check batch size
-    if (inputs.size() != inferrerConfig.inputShape.d[0]) {
-        PLOG(plog::error) << "Invalid batch size.";
-        PLOG(plog::error) << "Expected " << inferrerConfig.inputShape.d[0] << ", got " << inputs.size() << ".";
-        return false;
+    if (inputs.size() != inferrerConfig.nbBatches) {
+        throw std::runtime_error("invalid input batch size (expected "
+            + std::to_string(inferrerConfig.nbBatches) + ", got " + std::to_string(inputs.size()) + ")");
     }
 
     // Check image size
-    for (const auto& mat : inputs) {
-        //if (mat.channels() != inferrerConfig.inputShape.d[1]) {
-        //    PLOG(plog::error) << "Invalid number of channels.";
-        //    PLOG(plog::error) << "Expected " << inferrerConfig.inputShape.d[1] << ", got " << mat.channels() << ".";
-        //    return false;
-        //}
-
-        if (mat.rows != inferrerConfig.inputShape.d[2]) {
-            PLOG(plog::error) << "Invalid height.";
-            PLOG(plog::error) << "Expected " << inferrerConfig.inputShape.d[2] << ", got " << mat.rows << ".";
-            return false;
+    for (const auto& mat: inputs) {
+        if (mat.channels() != inferrerConfig.channels) {
+            throw std::runtime_error("invalid image channels (expected "
+                + std::to_string(inferrerConfig.channels) + ", got " + std::to_string(mat.channels()) + ")");
         }
 
-        if (mat.cols != inferrerConfig.inputShape.d[3]) {
-            PLOG(plog::error) << "Invalid width.";
-            PLOG(plog::error) << "Expected " << inferrerConfig.inputShape.d[3] << ", got " << mat.cols << ".";
-            return false;
+        if (mat.rows != inferrerConfig.height) {
+            throw std::runtime_error("invalid image height (expected "
+                + std::to_string(inferrerConfig.height) + ", got " + std::to_string(mat.rows) + ")");
+        }
+
+        if (mat.cols != inferrerConfig.width) {
+            throw std::runtime_error("invalid image width (expected "
+                + std::to_string(inferrerConfig.width) + ", got " + std::to_string(mat.cols) + ")");
         }
     }
 
     // Create stream
     cudaStream_t stream;
-    cudaStreamCreate(&stream);
+    try {
+        cudaAssert(cudaStreamCreate(&stream));
+    }
+    catch (const std::exception& e) {
+        throw std::runtime_error("could not create cuda stream (" + std::string(e.what()) + ")");
+    }
 
-    context->setOptimizationProfileAsync(0, stream);
-    context->setInputShape(engine->getIOTensorName(0), inferrerConfig.inputShape);
+    try {
+        // Preprocess input
+        auto blob = blobFromImages(inputs, true);
 
-    auto blob = blobFromImages(inputs, true);
-    auto* ptr = blob.ptr<void>();
-    auto size = blob.channels() * blob.rows * blob.cols * sizeof(float);
-    cudaMemcpyAsync(buffers[0].first, ptr, size, cudaMemcpyDeviceToDevice, stream);
+        // Copy blob to input tensor buffer
+        cudaAssert(cudaMemcpyAsync(buffers[0].first, blob.ptr<void>(),
+            buffers[0].second, cudaMemcpyDeviceToDevice, stream));
 
-    // Set input and output addresses
-    for (int i = 0; i < buffers.size(); ++i) {
-        if (!context->setTensorAddress(engine->getIOTensorName(i), buffers[i].first)) {
-            PLOG(plog::error) << "Failed to set tensor address for tensor \"" << engine->getIOTensorName(i) << "\".";
-            return false;
+        // Enqueue inference
+        if (!context->enqueueV3(stream)) {
+            throw std::runtime_error("could not enqueue inference");
         }
+
+        // Copy output to host
+        std::vector<cv::cuda::GpuMat> temp(inferrerConfig.nbBatches);
+        for (int i = 0; i < temp.size(); ++i) {
+            auto shape = context->getTensorShape(engine->getIOTensorName(1));
+            temp[i].create(shape.d[2], shape.d[3], CV_32FC3);
+            cudaAssert(cudaMemcpyAsync(temp[i].ptr<void>(), buffers[1].first,
+                buffers[1].second, cudaMemcpyDeviceToDevice, stream));
+        }
+
+        // Postprocess output
+        outputs.clear();
+        outputs = imagesFromBlob(temp[0], context->getTensorShape(engine->getIOTensorName(1)), true);
+    }
+    catch (const std::exception& e) {
+        cudaAssert(cudaStreamDestroy(stream));
+        throw e;
     }
 
-    // Execute inference
-    PLOG(plog::info) << "Executing inference...";
-    if (!context->enqueueV3(stream)) {
-        PLOG(plog::error) << "Failed to execute inference.";
-        return false;
-    }
-
-    // Copy output to host
-    // FIX: ONLY ONE BATCH
-    std::vector<cv::cuda::GpuMat> temp(inferrerConfig.inputShape.d[0]);
-    for (int i = 0; i < temp.size(); ++i) {
-        auto shape = context->getTensorShape(engine->getIOTensorName(1));
-        temp[i].create(shape.d[2], shape.d[3], CV_32FC3);
-        cudaMemcpyAsync(temp[i].ptr<void>(), buffers[1].first, buffers[1].second, cudaMemcpyDeviceToDevice, stream);
-    }
-
-    outputs.clear();
-    outputs = imagesFromBlob(temp[0], context->getTensorShape(engine->getIOTensorName(1)), true);
-
-    // Destroy stream
-    cudaStreamSynchronize(stream);
-    cudaStreamDestroy(stream);
-
+    cudaAssert(cudaStreamSynchronize(stream));
+    cudaAssert(cudaStreamDestroy(stream));
     return true;
+}
+catch (const std::exception& e) {
+    PLOG(plog::error) << "Failed to infer: " << e.what() << ".";
+    return false;
 }
 
 cv::cuda::GpuMat trt::Img2Img::blobFromImages(std::vector<cv::cuda::GpuMat>& images, bool normalize) {
     cv::cuda::GpuMat gpu_dst(1, images.size() * images[0].channels() * images[0].rows * images[0].cols, CV_8U);
 
     size_t width = images[0].cols * images[0].rows;
-    for (size_t img = 0; img < images.size(); img++) {
+    for (size_t i = 0; i < images.size(); ++i) {
         std::vector<cv::cuda::GpuMat> channels {
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[0 * width + 3 * width * img])),
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[1 * width + 3 * width * img])),
-            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[2 * width + 3 * width * img]))
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[0 * width + 3 * width * i])),
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[1 * width + 3 * width * i])),
+            cv::cuda::GpuMat(images[0].rows, images[0].cols, CV_8U, &(gpu_dst.ptr()[2 * width + 3 * width * i]))
         };
-        cv::cuda::split(images[img], channels);  // HWC -> CHW
+        cv::cuda::split(images[i], channels);  // HWC -> CHW
     }
 
     cv::cuda::GpuMat mfloat;
@@ -359,18 +378,18 @@ std::vector<cv::cuda::GpuMat> trt::Img2Img::imagesFromBlob(cv::cuda::GpuMat& blo
     return images;
 }
 
-bool trt::Img2Img::serializeConfig(std::string& path, const BuilderConfig &config) {
+bool trt::Img2Img::serializeConfig(std::string& path, const BuilderConfig& config) {
     const auto filenameIndex = path.find_last_of('/') + 1;
     path = path.substr(filenameIndex, path.find_last_of('.') - filenameIndex);
 
     // Append device name
     std::vector<std::string> deviceNames;
     getDeviceNames(deviceNames);
-    if (config.deviceIndex >= deviceNames.size()) {
+    if (config.deviceId >= deviceNames.size()) {
         PLOG(plog::error) << "Invalid device index.";
         return false;
     }
-    auto deviceName = deviceNames[config.deviceIndex];
+    auto deviceName = deviceNames[config.deviceId];
     deviceName.erase(std::remove_if(deviceName.begin(), deviceName.end(), ::isspace), deviceName.end());
     path += "." + deviceName;
 
@@ -433,7 +452,7 @@ bool trt::Img2Img::deserializeConfig(const std::string& path, BuilderConfig& con
         return false;
     }
 
-    config.deviceIndex = deviceIndex;
+    config.deviceId = deviceIndex;
     config.precision = tokens[2] == "FP16" ? Precision::FP16 : Precision::TF32;
     config.minBatchSize = std::stoi(tokens[3]);
     config.optBatchSize = std::stoi(tokens[4]);
@@ -448,13 +467,13 @@ bool trt::Img2Img::deserializeConfig(const std::string& path, BuilderConfig& con
     return true;
 }
 
-void trt::Img2Img::getDeviceNames(std::vector<std::string> &deviceNames) {
+void trt::Img2Img::getDeviceNames(std::vector<std::string>& deviceNames) {
     int32_t deviceCount;
     cudaGetDeviceCount(&deviceCount);
     deviceNames.clear();
     deviceNames.reserve(deviceCount);
     for (int32_t i = 0; i < deviceCount; ++i) {
-        cudaDeviceProp deviceProp {};
+        cudaDeviceProp deviceProp{};
         cudaGetDeviceProperties(&deviceProp, i);
         deviceNames.emplace_back(deviceProp.name);
     }

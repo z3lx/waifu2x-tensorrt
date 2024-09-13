@@ -10,8 +10,8 @@ namespace trt {
     };
 
     struct BuilderConfig {
+        int deviceId = 0;
         Precision precision = Precision::FP16;
-        int deviceIndex = 0;
 
         int32_t minBatchSize = 1;
         int32_t optBatchSize = 1;
@@ -27,7 +27,7 @@ namespace trt {
 
         bool operator==(const BuilderConfig& other) const {
             return precision == other.precision &&
-                deviceIndex == other.deviceIndex &&
+                deviceId == other.deviceId &&
                 minBatchSize == other.minBatchSize &&
                 optBatchSize == other.optBatchSize &&
                 maxBatchSize == other.maxBatchSize &&
@@ -47,7 +47,10 @@ namespace trt {
     struct InferrerConfig {
         int deviceId = 0;
         Precision precision = Precision::FP16;
-        nvinfer1::Dims32 inputShape {};
+        int nbBatches = 1;
+        int channels = 3;
+        int height = 256;
+        int width = 256;
     };
 }
 
