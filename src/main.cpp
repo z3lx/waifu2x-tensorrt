@@ -60,7 +60,7 @@ int main(int argc, char *argv[]) {
 
     int tileSize;
     const auto tileSizeChoices = {
-        64, 256, 400, 640
+        64, 128, 256, 400, 640
     };
     app.add_option("--tileSize", tileSize)
         ->description("Set the tile size")
@@ -99,6 +99,11 @@ int main(int argc, char *argv[]) {
     render->add_option("-o, --output", outputDirectory)
         ->description("Set the output directory")
         ->check(CLI::ExistingDirectory);
+
+    bool nosuffix = false;
+    render->add_flag("--nosuffix", nosuffix)
+        ->description("Set to not have the suffix added to the filenames")
+        ->default_val(nosuffix);
 
     double blend = 1.0/16.0;
     const auto blendChoices = {
@@ -235,7 +240,11 @@ int main(int argc, char *argv[]) {
             if (!outputDirectory.empty()) {
                 file = outputDirectory / file.filename();
             }
-            file.replace_filename(file.stem().string() + suffix);
+
+            if (!nosuffix) {                
+                file.replace_filename(file.stem().string() + suffix + file.extension().string());
+            }
+            
             if (frameCount == 1) {
                 file.replace_extension(".png");
                 writer.setFrameRate(1)
