@@ -1,7 +1,7 @@
 # waifu2x-tensorrt
 waifu2x-tensorrt is a TensorRT implementation of the waifu2x super-resolution model. This project aims to improve the inference speed for faster image upscaling on NVIDIA GPUs. Supports images and videos alike.
 
-**Note**: This project is currently under active development by a high school student (that's me!). As a result, some features may be missing, and bugs can be expected. Contributions and feedback are welcome though!
+**Note**: This project is not currently under development; it will resume when I have more free time. Some features may be missing, and bugs can be expected. Contributions and feedback are welcome though!
 
 ## Installation
 ### Precompiled Version
